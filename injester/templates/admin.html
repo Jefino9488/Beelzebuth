@@ -1,0 +1,201 @@
+{% extends "base.html" %}
+
+{% block title %}Tenants & Identity Administration — Injester{% endblock %}
+
+{% block content %}
+<div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 2rem;">
+  <div>
+    <h1 style="font-size: 1.875rem; font-weight: 700; letter-spacing: -0.025em;">Tenants & Identity Administration</h1>
+    <p style="color: var(--text-muted); font-size: 0.95rem;">Manage the 4-tier domain hierarchy: Developer &rarr; Client Organisation &rarr; Employee &rarr; Files.</p>
+  </div>
+</div>
+
+{% if message %}
+<div style="padding: 1rem; border-radius: 0.375rem; margin-bottom: 1.5rem; background-color: #064e3b; color: #a7f3d0; border: 1px solid #059669;">
+  {{ message }}
+</div>
+{% endif %}
+
+<!-- Active LLM Configuration (Dev Admin Only) -->
+<div class="card" style="border-left: 4px solid var(--accent); margin-bottom: 2rem;">
+  <div class="card-header">
+    <h2 class="card-title">⚡ BYOAI Engine & Model Configuration</h2>
+    <span class="badge badge-success">Configurable by Developer Admin</span>
+  </div>
+  <p style="font-size: 0.875rem; color: var(--text-muted); margin-bottom: 1rem;">
+    LLM providers are not hardcoded. The platform developer can switch between providers or configure custom endpoints dynamically.
+  </p>
+
+  <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 1rem; margin-bottom: 1.25rem;">
+    <div style="background: rgba(15, 23, 42, 0.6); padding: 0.875rem; border-radius: 0.375rem; border: 1px solid var(--border-color);">
+      <div style="font-size: 0.75rem; color: var(--text-muted); text-transform: uppercase;">Active Model</div>
+      <div style="font-size: 1rem; font-weight: 600; color: #93c5fd; margin-top: 0.25rem;">{{ active_model }}</div>
+    </div>
+    <div style="background: rgba(15, 23, 42, 0.6); padding: 0.875rem; border-radius: 0.375rem; border: 1px solid var(--border-color);">
+      <div style="font-size: 0.75rem; color: var(--text-muted); text-transform: uppercase;">Base URL</div>
+      <div style="font-size: 0.85rem; font-family: var(--font-mono); color: #cbd5e1; margin-top: 0.25rem;">{{ active_base_url }}</div>
+    </div>
+    <div style="background: rgba(15, 23, 42, 0.6); padding: 0.875rem; border-radius: 0.375rem; border: 1px solid var(--border-color);">
+      <div style="font-size: 0.75rem; color: var(--text-muted); text-transform: uppercase;">API Key</div>
+      <div style="font-size: 0.85rem; font-family: var(--font-mono); color: #a7f3d0; margin-top: 0.25rem;">{{ active_key_masked }}</div>
+    </div>
+  </div>
+
+  <div style="display: flex; gap: 0.75rem; flex-wrap: wrap;">
+    <form action="/ui/admin/llm-preset" method="POST" style="display: inline;">
+      <input type="hidden" name="preset" value="lightning">
+      <button type="submit" class="btn btn-primary" style="font-size: 0.8rem;">
+        ⚡ Switch to Lightning AI (Gemini 2.5 Flash-Lite)
+      </button>
+    </form>
+    <form action="/ui/admin/llm-preset" method="POST" style="display: inline;">
+      <input type="hidden" name="preset" value="openrouter_free">
+      <button type="submit" class="btn btn-secondary" style="font-size: 0.8rem;">
+        🌐 Switch to OpenRouter (Free AI)
+      </button>
+    </form>
+  </div>
+</div>
+
+<div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(340px, 1fr)); gap: 1.5rem; margin-bottom: 2rem;">
+  <!-- Onboard Client Org -->
+  <div class="card">
+    <div class="card-header">
+      <h2 class="card-title">1. Onboard Client Organisation</h2>
+      <span class="badge badge-primary">Developer Only</span>
+    </div>
+    <form action="/ui/admin/organisations" method="POST">
+      <div class="form-group">
+        <label for="org_name">Organisation / Client Name:</label>
+        <input type="text" id="org_name" name="org_name" placeholder="e.g. Indian Bank" required>
+      </div>
+      <button type="submit" class="btn btn-primary" style="width: 100%;">Create & Approve Tenant</button>
+    </form>
+  </div>
+
+  <!-- Assign Client Admin -->
+  <div class="card">
+    <div class="card-header">
+      <h2 class="card-title">2. Assign Client Super Admin</h2>
+      <span class="badge badge-info">Tenant Admin</span>
+    </div>
+    <form action="/ui/admin/admins" method="POST">
+      <div class="form-group">
+        <label for="target_org_id">Target Organisation:</label>
+        <select name="target_org_id" id="target_org_id" required>
+          {% for org in organisations %}
+          <option value="{{ org.id }}">{{ org.name }}</option>
+          {% endfor %}
+        </select>
+      </div>
+      <div class="form-group">
+        <label for="admin_email">Admin Email:</label>
+        <input type="email" id="admin_email" name="admin_email" placeholder="admin@indianbank.in" required>
+      </div>
+      <div class="form-group">
+        <label for="admin_password">Initial Password:</label>
+        <input type="password" id="admin_password" name="admin_password" required>
+      </div>
+      <button type="submit" class="btn btn-primary" style="width: 100%;">Assign Client Admin</button>
+    </form>
+  </div>
+
+  <!-- Provision Employee -->
+  <div class="card">
+    <div class="card-header">
+      <h2 class="card-title">3. Provision Employee User</h2>
+      <span class="badge badge-success">Scoped User</span>
+    </div>
+    <form action="/ui/admin/employees" method="POST">
+      <div class="form-group">
+        <label for="emp_org_id">Organisation:</label>
+        <select name="emp_org_id" id="emp_org_id" required>
+          {% for org in organisations %}
+          <option value="{{ org.id }}">{{ org.name }}</option>
+          {% endfor %}
+        </select>
+      </div>
+      <div class="form-group">
+        <label for="emp_email">Employee Email:</label>
+        <input type="email" id="emp_email" name="emp_email" placeholder="officer@indianbank.in" required>
+      </div>
+      <div class="form-group">
+        <label for="emp_password">Initial Password:</label>
+        <input type="password" id="emp_password" name="emp_password" required>
+      </div>
+      <button type="submit" class="btn btn-primary" style="width: 100%;">Create Employee</button>
+    </form>
+  </div>
+</div>
+
+<!-- Organisations List -->
+<div class="card">
+  <div class="card-header">
+    <h2 class="card-title">Active Organisations & Tenants ({{ organisations|length }})</h2>
+  </div>
+  <div class="table-container">
+    <table>
+      <thead>
+        <tr>
+          <th>Organisation Name</th>
+          <th>Tenant UUID</th>
+          <th>Status</th>
+          <th>Created At</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for org in organisations %}
+        <tr>
+          <td style="font-weight: 600;">🏢 {{ org.name }}</td>
+          <td style="font-family: var(--font-mono); font-size: 0.8rem; color: #93c5fd;">{{ org.id }}</td>
+          <td><span class="badge badge-success">{{ org.status.value }}</span></td>
+          <td style="color: var(--text-muted); font-size: 0.85rem;">{{ org.created_at.strftime('%Y-%m-%d %H:%M') if org.created_at else 'Recent' }}</td>
+        </tr>
+        {% else %}
+        <tr>
+          <td colspan="4" style="text-align: center; color: var(--text-muted); padding: 2rem;">No organisations onboarded yet.</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<!-- Audit Trail -->
+<div class="card">
+  <div class="card-header">
+    <h2 class="card-title">Recent Security Audit Logs</h2>
+    <span class="badge badge-warning">PostgreSQL Immutable Log</span>
+  </div>
+  <div class="table-container">
+    <table>
+      <thead>
+        <tr>
+          <th>Timestamp</th>
+          <th>Action</th>
+          <th>Tenant ID</th>
+          <th>Details</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for log in audit_logs %}
+        <tr>
+          <td style="color: var(--text-muted); font-size: 0.8rem; font-family: var(--font-mono);">
+            {{ log.created_at.strftime('%Y-%m-%d %H:%M:%S') if log.created_at else 'Just now' }}
+          </td>
+          <td><span class="badge badge-primary">{{ log.action }}</span></td>
+          <td style="font-family: var(--font-mono); font-size: 0.75rem; color: var(--text-muted);">
+            {{ log.organisation_id[:8] if log.organisation_id else 'Platform' }}...
+          </td>
+          <td style="font-size: 0.85rem;">{{ log.details }}</td>
+        </tr>
+        {% else %}
+        <tr>
+          <td colspan="4" style="text-align: center; color: var(--text-muted); padding: 2rem;">No audit logs recorded yet.</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+{% endblock %}
