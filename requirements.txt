@@ -16,4 +16,10 @@ uvicorn[standard]
 python-multipart
 pyjwt
 email-validator
-jinja2
+networkx>=3.0
+sentencepiece
+markdown
+torch
+transformers
+typesafe-sdk
+laya
