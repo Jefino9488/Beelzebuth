@@ -13,6 +13,7 @@ def sample_evidence():
         page_number=14,
         section_path=["Access Provisioning"],
         source_location="Page 14, Section: Access Provisioning",
+        file_version_id="ver_policy_01",
     )
     chunk = DocumentChunk(
         chunk_id="chunk_8f31",
@@ -22,6 +23,7 @@ def sample_evidence():
         text="Employees must obtain manager approval before system access is provisioned.",
         section_hierarchy=["Access Provisioning"],
         page_numbers=[14],
+        file_version_id="ver_policy_01",
         provenance=meta,
     )
     return [chunk]

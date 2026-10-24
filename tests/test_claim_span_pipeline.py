@@ -13,6 +13,7 @@ def sample_chunk():
         page_number=1,
         section_path=["Underwriting"],
         source_location="Page 1, Section: Underwriting",
+        file_version_id="ver_loan_01",
     )
     text = (
         "Loan intake conducts initial document verification within 24 hours.\n"
@@ -27,6 +28,7 @@ def sample_chunk():
         text=text,
         section_hierarchy=["Underwriting"],
         page_numbers=[1],
+        file_version_id="ver_loan_01",
         provenance=meta,
     )
 
@@ -174,8 +176,10 @@ def test_headingless_document_span_segmentation():
             page_number=1,
             section_path=[],
             element_type="NarrativeText",
-            source_location="travel_rules.txt"
-        )
+            source_location="travel_rules.txt",
+            file_version_id="ver_travel_01",
+        ),
+        file_version_id="ver_travel_01",
     )
 
     registry = SpanRegistry.from_chunks([chunk])

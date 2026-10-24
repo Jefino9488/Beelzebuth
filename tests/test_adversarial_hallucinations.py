@@ -22,6 +22,7 @@ def loan_span_and_chunk():
         text=raw_text,
         section_hierarchy=["Approval Routing"],
         page_numbers=[2],
+        file_version_id="ver_loan_adv_01",
         provenance=ProvenanceMetadata(
             document_id="doc_loan_adv",
             filename="PersonalLoan_Policy.docx",
@@ -30,6 +31,7 @@ def loan_span_and_chunk():
             section_path=["Approval Routing"],
             element_type="CompositeChunk",
             source_location="Page 2, Section: Approval Routing",
+            file_version_id="ver_loan_adv_01",
         )
     )
     registry = SpanRegistry.from_chunks([chunk])
@@ -154,6 +156,7 @@ def test_adversarial_mutation_4_condition_injection():
         text=raw_text,
         section_hierarchy=["Approval Routing"],
         page_numbers=[2],
+        file_version_id="ver_loan_adv_04",
         provenance=ProvenanceMetadata(
             document_id="doc_loan_adv",
             filename="PersonalLoan_Policy.docx",
@@ -162,6 +165,7 @@ def test_adversarial_mutation_4_condition_injection():
             section_path=["Approval Routing"],
             element_type="CompositeChunk",
             source_location="Page 2",
+            file_version_id="ver_loan_adv_04",
         )
     )
     validator = CitationValidator()
@@ -206,6 +210,7 @@ def test_adversarial_mutation_5_workflow_sequencing_hallucination():
         text=raw_text,
         section_hierarchy=["Leave Approval"],
         page_numbers=[1],
+        file_version_id="ver_leave_adv_05",
         provenance=ProvenanceMetadata(
             document_id="doc_leave_adv",
             filename="Leave_Policy.docx",
@@ -214,6 +219,7 @@ def test_adversarial_mutation_5_workflow_sequencing_hallucination():
             section_path=["Leave Approval"],
             element_type="CompositeChunk",
             source_location="Page 1",
+            file_version_id="ver_leave_adv_05",
         )
     )
     validator = CitationValidator()
@@ -256,6 +262,7 @@ def test_legitimate_claims_remain_entailed():
         text=raw_text,
         section_hierarchy=["Approval Routing"],
         page_numbers=[2],
+        file_version_id="ver_legit_01",
         provenance=ProvenanceMetadata(
             document_id="doc_legit",
             filename="PersonalLoan_Policy.docx",
@@ -264,6 +271,7 @@ def test_legitimate_claims_remain_entailed():
             section_path=["Approval Routing"],
             element_type="CompositeChunk",
             source_location="Page 2",
+            file_version_id="ver_legit_01",
         )
     )
     validator = CitationValidator()

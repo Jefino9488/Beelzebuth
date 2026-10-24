@@ -7,14 +7,21 @@ from injester.infrastructure.db import TenantRepository
 def test_four_identities_and_tenant_isolation(db_session, superadmin_ctx):
     repo = TenantRepository(db_session)
 
-    # 1. Developer / Super Admin onboards Indian Bank
+    # 1. Developer / Super Admin onboards Indian Bank (default PENDING status)
     org_name = f"Indian Bank {uuid.uuid4().hex[:6]}"
     org_indian_bank = repo.create_organisation(superadmin_ctx, name=org_name)
     assert org_indian_bank.id is not None
+    assert org_indian_bank.status == OrgStatus.PENDING
+
+    # Approve Indian Bank
+    org_indian_bank = repo.approve_organisation(superadmin_ctx, org_indian_bank.id)
     assert org_indian_bank.status == OrgStatus.APPROVED
 
-    # Onboard second client org: Acme Corp
+    # Onboard second client org: Acme Corp and approve
     org_acme = repo.create_organisation(superadmin_ctx, name=f"Acme Corp {uuid.uuid4().hex[:6]}")
+    assert org_acme.status == OrgStatus.PENDING
+    org_acme = repo.approve_organisation(superadmin_ctx, org_acme.id)
+    assert org_acme.status == OrgStatus.APPROVED
 
     # 2. Assign Client Super Admin for Indian Bank
     ca_user = repo.create_client_admin(
