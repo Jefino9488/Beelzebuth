@@ -12,6 +12,7 @@ class ProvenanceMetadata(BaseModel):
     section_path: List[str] = Field(default_factory=list, description="Hierarchy of headings, e.g. ['Access Control', 'Provisioning']")
     element_type: str = Field(default="NarrativeText", description="Title, NarrativeText, Table, ListItem, etc.")
     source_location: str = Field(default="", description="Human-readable citation location, e.g. 'Page 14, Section: Access Provisioning'")
+    file_version_id: Optional[str] = Field(default=None, description="Exact FileVersion ID")
     extra: Dict[str, Any] = Field(default_factory=dict, description="Additional unstructured metadata")
 
 class NormalizedElement(BaseModel):
@@ -33,6 +34,7 @@ class DocumentChunk(BaseModel):
     text: str
     section_hierarchy: List[str] = Field(default_factory=list)
     page_numbers: List[int] = Field(default_factory=list)
+    file_version_id: Optional[str] = Field(default=None, description="Exact FileVersion ID")
     provenance: ProvenanceMetadata
 
     def to_citation_format(self, citation_tag: str = "C1") -> str:

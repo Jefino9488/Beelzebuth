@@ -31,3 +31,13 @@ class VectorStore(ABC):
     def delete_document(self, tenant_id: str, document_id: str) -> None:
         """Removes all indexed chunks associated with a specific document."""
         pass
+
+    @abstractmethod
+    def list_documents(self, tenant_id: str) -> List[str]:
+        """Lists all distinct document IDs indexed for the tenant."""
+        pass
+
+    @abstractmethod
+    def get_chunks(self, tenant_id: str, document_ids: Optional[List[str]] = None) -> List[DocumentChunk]:
+        """Retrieves stored chunks for a tenant, optionally filtered by document IDs."""
+        pass

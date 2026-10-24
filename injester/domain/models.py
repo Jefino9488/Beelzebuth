@@ -12,6 +12,7 @@ from sqlalchemy import (
     Enum as SQLEnum,
     Text,
     Index,
+    JSON,
 )
 from sqlalchemy.orm import declarative_base, relationship
 
@@ -142,3 +143,68 @@ class AuditLog(Base):
     action = Column(String(128), nullable=False, index=True)
     details = Column(Text, nullable=True)
     created_at = Column(DateTime(timezone=True), default=utc_now, nullable=False)
+
+
+class ProcessGraphSnapshot(Base):
+    """
+    Immutable multi-document snapshot of an authoritative Process Graph.
+    Captures exact file versions, cryptographic source hashes, span registry state,
+    model versions, validation policy, canonical AST, defect register, and projections.
+    """
+    __tablename__ = "process_graph_snapshots"
+
+    id = Column(String(36), primary_key=True, default=generate_uuid)
+    organisation_id = Column(String(36), ForeignKey("organisations.id", ondelete="CASCADE"), nullable=False, index=True)
+    process_name = Column(String(255), nullable=False, index=True)
+    schema_version = Column(String(32), default="1.0", nullable=False)
+    
+    # Multi-document provenance set
+    file_version_ids = Column(JSON, default=list, nullable=False)  # List[str]
+    source_hashes = Column(JSON, default=list, nullable=False)     # List[str]
+    source_document_hashes = Column(JSON, default=dict, nullable=False)  # Dict[str, str]: file_id -> sha256
+    span_registry_hash = Column(String(64), nullable=False)        # SHA-256 of combined span registry
+    
+    # Model & Verification Policy lineage
+    reasoner_model = Column(String(128), nullable=False)
+    laya_model_version = Column(String(128), nullable=False)
+    validation_policy_version = Column(String(64), default="1.0", nullable=False)
+
+    # Core dual-output payloads & projections
+    canonical_graph = Column(JSON, nullable=False)
+    defect_register = Column(JSON, nullable=False)
+    projections = Column(JSON, default=dict, nullable=False)
+
+    created_at = Column(DateTime(timezone=True), default=utc_now, nullable=False)
+
+    generation_runs = relationship("GenerationRun", back_populates="snapshot")
+
+    def __repr__(self) -> str:
+        return f"<ProcessGraphSnapshot(id={self.id}, process={self.process_name}, schema={self.schema_version})>"
+
+
+class GenerationRun(Base):
+    """
+    Authoritative audit and lineage record of a Process Graph or SOP generation execution.
+    Tracks exact input versions, cryptographic source hashes, model configs, and freshness keys for 100% reproducibility.
+    """
+    __tablename__ = "generation_runs"
+
+    id = Column(String(36), primary_key=True, default=generate_uuid)
+    organisation_id = Column(String(36), ForeignKey("organisations.id", ondelete="CASCADE"), nullable=False, index=True)
+    user_id = Column(String(36), ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True)
+    run_type = Column(String(32), nullable=False, index=True)  # 'process_graph' | 'sop'
+    input_file_version_ids = Column(JSON, default=list, nullable=False)  # List[str]
+    input_hashes = Column(JSON, default=dict, nullable=False)  # Dict[str, str] (file_id -> sha256)
+    output_snapshot_id = Column(String(36), ForeignKey("process_graph_snapshots.id", ondelete="SET NULL"), nullable=True, index=True)
+    output_sop_id = Column(String(36), nullable=True)
+    output_defect_register_id = Column(String(36), nullable=True)
+    config_hash = Column(String(64), nullable=False)  # SHA-256 of configuration & prompt settings
+    freshness_key = Column(String(64), nullable=False, index=True)  # hash(sorted(file_version_ids) + config_hash)
+    created_at = Column(DateTime(timezone=True), default=utc_now, nullable=False)
+
+    organisation = relationship("Organisation")
+    user = relationship("User")
+    snapshot = relationship("ProcessGraphSnapshot", back_populates="generation_runs")
+
+    def __repr__(self) -> str:
+        return f"<GenerationRun(id={self.id}, type={self.run_type}, org={self.organisation_id}, freshness={self.freshness_key[:8]})>"
