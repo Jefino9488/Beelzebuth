@@ -41,9 +41,13 @@ async def upload_file(
             detail="Files must be uploaded within a tenant organisation context."
         )
 
+    safe_filename = Path(file.filename).name if file.filename else "upload_file"
+    if not safe_filename or safe_filename in (".", ".."):
+        safe_filename = "upload_file"
+
     content = await file.read()
     temp_dir = tempfile.mkdtemp()
-    temp_path = Path(temp_dir) / file.filename
+    temp_path = Path(temp_dir) / safe_filename
     temp_path.write_bytes(content)
 
     pipeline = InjesterPipeline(session=db)
@@ -51,7 +55,7 @@ async def upload_file(
         file_rec, ver_rec, chunks = pipeline.ingest_file(
             sec_ctx=sec_ctx,
             file_path=temp_path,
-            filename=file.filename,
+            filename=safe_filename,
             folder_id=folder_id
         )
         return FileResponse(
@@ -130,3 +134,79 @@ def get_file_details(
         )
     except Exception as e:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(e))
+
+
+class SpanEntry(BaseModel):
+    span_id: str
+    page_number: str
+    text: str
+    location: str
+    section: str
+
+
+class FileSpansResponse(BaseModel):
+    file_id: str
+    file_name: str
+    organisation_name: Optional[str] = None
+    spans: List[SpanEntry] = []
+
+
+@router.get("/{file_id}/spans", response_model=FileSpansResponse)
+def get_file_spans(
+    file_id: str,
+    sec_ctx: SecurityContext = Depends(get_current_sec_ctx),
+    db: Session = Depends(get_db),
+):
+    """
+    Returns the immutable granular evidence spans for the latest version of a document.
+
+    Spans are re-derived from the stored blob so they always reflect the current
+    extraction and segmentation policy.
+    """
+    repo = TenantRepository(db)
+    try:
+        file_rec = repo.get_visible_file(sec_ctx, file_id)
+    except Exception:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Document not found")
+
+    spans: List[SpanEntry] = []
+    if file_rec.versions:
+        latest = sorted(file_rec.versions, key=lambda v: v.version_number)[-1]
+        storage_path = Path(latest.storage_path)
+        if storage_path.exists():
+            try:
+                from injester.ingestion.extractor import DocumentExtractor
+                from injester.ingestion.chunker import HierarchicalChunker
+                from injester.semantic.pipeline import GranularSpanRegistry
+
+                elements = DocumentExtractor().extract(
+                    file_path=storage_path,
+                    document_id=file_rec.id,
+                    filename=file_rec.name,
+                    tenant_id=file_rec.organisation_id,
+                    file_version_id=latest.id,
+                    file_hash=latest.file_hash,
+                )
+                chunks = HierarchicalChunker().chunk_elements(elements)
+                registry = GranularSpanRegistry.from_chunks(chunks)
+                for span in registry.spans_by_id.values():
+                    page_number = span.location.replace("Page ", "").strip() if "Page " in span.location else "1"
+                    spans.append(
+                        SpanEntry(
+                            span_id=span.span_id,
+                            page_number=page_number,
+                            text=span.text,
+                            location=span.location,
+                            section=span.section,
+                        )
+                    )
+            except Exception:
+                spans = []
+
+    organisation = getattr(file_rec, "organisation", None)
+    return FileSpansResponse(
+        file_id=file_rec.id,
+        file_name=file_rec.name,
+        organisation_name=organisation.name if organisation else None,
+        spans=spans,
+    )

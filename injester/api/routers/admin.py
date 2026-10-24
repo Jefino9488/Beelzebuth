@@ -3,6 +3,7 @@ from pydantic import BaseModel, EmailStr
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 
+from injester.config import settings
 from injester.domain.auth import SecurityContext
 from injester.domain.models import Organisation
 from injester.infrastructure.db import TenantRepository
@@ -37,6 +38,32 @@ def onboard_organisation(
     repo = TenantRepository(db)
     try:
         org = repo.create_organisation(sec_ctx, name=req.name)
+        return OrgResponse(id=org.id, name=org.name, status=org.status.value)
+    except Exception as e:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+
+@router.post("/organisations/{org_id}/approve", response_model=OrgResponse)
+def approve_organisation(
+    org_id: str,
+    sec_ctx: SecurityContext = Depends(require_super_admin),
+    db: Session = Depends(get_db)
+):
+    repo = TenantRepository(db)
+    try:
+        org = repo.approve_organisation(sec_ctx, org_id=org_id)
+        return OrgResponse(id=org.id, name=org.name, status=org.status.value)
+    except Exception as e:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+
+@router.post("/organisations/{org_id}/suspend", response_model=OrgResponse)
+def suspend_organisation(
+    org_id: str,
+    sec_ctx: SecurityContext = Depends(require_super_admin),
+    db: Session = Depends(get_db)
+):
+    repo = TenantRepository(db)
+    try:
+        org = repo.suspend_organisation(sec_ctx, org_id=org_id)
         return OrgResponse(id=org.id, name=org.name, status=org.status.value)
     except Exception as e:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))

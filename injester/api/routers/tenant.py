@@ -13,6 +13,7 @@ router = APIRouter(prefix="/api/tenant", tags=["Tenant Management"])
 class CreateEmployeeRequest(BaseModel):
     email: EmailStr
     password: str
+    organisation_id: Optional[str] = None
 
 class EmployeeResponse(BaseModel):
     id: str
@@ -37,10 +38,21 @@ def add_employee(
     db: Session = Depends(get_db)
 ):
     repo = TenantRepository(db)
+    # A platform Super Admin may target any tenant; everyone else is pinned to their own.
+    target_org = (
+        req.organisation_id
+        if (sec_ctx.is_super_admin and req.organisation_id)
+        else sec_ctx.organisation_id
+    )
+    if not target_org:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="An organisation scope is required to provision an employee.",
+        )
     try:
         user = repo.create_employee(
             sec_ctx,
-            org_id=sec_ctx.organisation_id,
+            org_id=target_org,
             email=req.email,
             password=req.password
         )
@@ -76,9 +88,8 @@ def list_folders(
     sec_ctx: SecurityContext = Depends(get_current_sec_ctx),
     db: Session = Depends(get_db)
 ):
-    if not sec_ctx.organisation_id:
-        return []
-    folders = db.query(Folder).filter(Folder.organisation_id == sec_ctx.organisation_id).all()
+    repo = TenantRepository(db)
+    folders = repo.list_folders(sec_ctx)
     return [
         FolderResponse(
             id=f.id,

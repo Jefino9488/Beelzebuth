@@ -5,7 +5,7 @@ from fastapi.security import OAuth2PasswordRequestForm
 from sqlalchemy.orm import Session
 
 from injester.infrastructure.db import SessionLocal
-from injester.domain.models import User
+from injester.domain.models import User, Organisation, OrgStatus
 from injester.domain.auth import verify_password, SecurityContext
 from injester.api.deps import get_db, create_access_token, get_current_sec_ctx
 
@@ -37,6 +37,14 @@ def login(req: LoginRequest, db: Session = Depends(get_db)):
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Incorrect email or password",
         )
+    if user.organisation_id:
+        org = db.get(Organisation, user.organisation_id)
+        if not org or org.status != OrgStatus.APPROVED:
+            status_val = org.status.value if org else "UNKNOWN"
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=f"Organisation access forbidden: status is '{status_val}'. Contact administrator."
+            )
     token = create_access_token(user)
     return TokenResponse(
         access_token=token,
@@ -56,6 +64,14 @@ def login_for_swagger(form_data: OAuth2PasswordRequestForm = Depends(), db: Sess
             detail="Incorrect username or password",
             headers={"WWW-Authenticate": "Bearer"},
         )
+    if user.organisation_id:
+        org = db.get(Organisation, user.organisation_id)
+        if not org or org.status != OrgStatus.APPROVED:
+            status_val = org.status.value if org else "UNKNOWN"
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=f"Organisation access forbidden: status is '{status_val}'. Contact administrator."
+            )
     token = create_access_token(user)
     return TokenResponse(
         access_token=token,
