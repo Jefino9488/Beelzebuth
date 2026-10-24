@@ -1,80 +1,199 @@
-# Project Injester
+# Beelzebuth (Injester Community)
 
-## Project Goal
+> **Devour any document into high-fidelity Markdown (`.md`) and depict them in diagrams.**
 
-For this standalone multi-format knowledge ingestion + SOP generation project, the final goal should be to build a pipeline that can ingest multiple heterogeneous sources—PDF, DOCX, PPTX, XLSX/CSV, TXT, Markdown, HTML, and eventually images/video—using Unstructured as the primary ingestion layer, normalize everything into a common element representation with strong provenance metadata such as document ID, filename, page/slide/sheet, section, element type, and source location, then intelligently chunk and index the content in a vector store such as FAISS (with the storage layer abstracted so it can later move to pgvector/Qdrant). From multiple documents, the system should build a global knowledge/section map, generate a structured SOP outline using Instructor + an LLM, retrieve relevant evidence across all source documents for each section, rerank the retrieved evidence, generate each section with structured citations, and then run a validation layer to detect unsupported claims, missing evidence, conflicting sources, or weak citations before assembling the final SOP. Jev can be added afterward as the decision/quality-control layer for chunk validation, retrieval sufficiency, conflict detection, and generation/citation validation. The end goal is therefore not merely an “Unstructured parser,” but a scalable ingestion-to-grounded-document-generation engine: ingest anything → normalize → understand → index → retrieve → generate → verify → produce a traceable SOP with citations back to the original sources.
+Beelzebuth is an open-source, local-first document digitization and grounding engine. It devours heterogeneous files (`.pdf`, `.docx`, `.xlsx`, `.csv`, `.txt`, `.md`, images) into clean, editable, and structurally faithful **GitHub-Flavored Markdown (`.md`)** in under 2 seconds—complete with native tables, inline Mermaid diagrams, and granular sentence-level citations `[S###]` anchored to an auditable **Citation & Source Provenance Index**.
 
-> **Current Focus Note:** While the ultimate goal includes video/image ingestion and adding Jev as the decision/quality-control layer, our current immediate focus is on building out the core text/document ingestion pipeline, chunking, indexing, SOP generation, and basic citation validation. Video/image ingestion and Jev integration will be deferred to a later phase.
+---
 
-## Product Goal
+## Key Capabilities
 
-We will **focus on the ingestion engine first, but implement the multi-tenant foundation alongside it**, because the ingestion system is the core product while tenant/file permissions are infrastructure that becomes painful to retrofit later. Architect it as a proper OOP/domain-driven system with four identities: **Developer/Super Admin → Client/Organisation → Employee/User → Files**. The Developer account should be a permanently privileged platform-level account, but **do not hard-code the actual password in source code**—bootstrap it through environment secrets and require secure password rotation. A Client such as **Indian Bank** is created through a controlled onboarding flow where the Developer approves the organisation, creates its tenant, and assigns its first Client Super Admin; that Client Super Admin can manage the organisation and access **all files belonging to that organisation and its employees**, while an Employee can access only files explicitly belonging to that employee. Every file should belong to an `organisation_id`, optionally a `user_id`, and a hierarchical `folder_id`, with a separate version model such as `File → FileVersion[]`, so you get folders, subfolders, version history, metadata, uploads, and audit trails without mixing tenant data. The architecture should enforce **tenant isolation at the backend/database layer**, not merely hide files in the frontend: every request resolves the authenticated user's organisation and authorization scope before querying anything. Your final system therefore becomes **Developer/Super Admin → approves and manages Clients → Client Admin manages organisation/employees → Employees manage/view their permitted files → Ingestion pipeline processes those files → normalized knowledge → retrieval → citation-grounded SOP generation**, giving you the ingestion engine you want while simultaneously establishing the enterprise-grade foundation needed to turn it into a real multi-tenant product.
+- **Universal Document Digitization**: Converts any document format into high-fidelity, human-readable `.md` while preserving all original context, headings, paragraphs, and list hierarchies.
+- **Native Table Transcription**: Detects tabular structures from PDFs, DOCX, and HTML layouts and converts them into standardized GitHub-Flavored Markdown tables.
+- **Diagram & Flow Preservation**: Recognizes process flows, sequence progressions, and state transitions, transcribing them into native inline Mermaid blocks (````mermaid graph TD ... ````).
+- **Granular Evidence Grounding**: Every sentence is tagged with an immutable citation badge `[S001]` mapped to an exact page, section path, and source excerpt in the **Citation & Source Provenance Index**.
+- **Three Unified Interfaces**: Operate via terminal CLI, local interactive Web Workbench, or Model Context Protocol (MCP) server for AI assistants—all sharing a single core engine and local workspace.
+- **Optional Diagram Depiction**: Synthesizes interactive document structure graphs, Mermaid flowcharts, swimlanes, and BPMN 2.0 XML.
+- **Zero Hardcoded Data & Zero Synthetic Drift**: No fake fallbacks, mock documents, or procedural hallucinations. Displays only genuine evidence or a clean empty state.
+- **Bring Your Own AI (BYOAI)**: Plug in any OpenAI-compatible provider (OpenRouter, Ollama, vLLM, OpenAI) or run offline on local hardware.
 
-## Overview
-**Injester** is a standalone, modular pipeline designed to intelligently ingest multiple unstructured documents, preserve their hierarchical structure, and synthesize them into a unified, structured document. 
+---
 
-The core philosophy of this project is **Bring Your Own AI (BYOAI)** — you can plug in any LLM API (OpenAI, Anthropic, local models, etc.) to drive the reasoning engine.
+## The Three Unified Interfaces
 
-## Core Objectives
-1. **Intelligent Extraction:** Use the `unstructured` library to parse PDFs, Word docs, and other formats while preserving tables, titles, and section hierarchies.
-2. **Structural Chunking:** Convert extracted elements into a rich JSON structure where every piece of text is tagged with strong provenance metadata (e.g., document ID, filename, page, section, element type).
-3. **Synthesis & Combination:** Generate a unified SOP outline from multiple documents, retrieving and reranking relevant evidence across all source documents for each section.
-4. **Structured Outputs & Citations:** Utilize the `instructor` library and `pydantic` to ensure the AI always outputs structurally perfect data with strict schemas, enforcing citation-based generation for every claim.
-5. **Traceable Markdown Output:** The final synthesized document will be compiled and exported as clean, readable Markdown (`.md`), complete with a citation index ensuring full auditability back to the original source documents.
-
-## Architecture & Pipeline Flow
-
-The intended end-to-end flow is:
-**Source documents → Unstructured → normalized elements + provenance → chunking → vector index → SOP outline → retrieve + rerank evidence → LLM generates each section with citations → citation/claim validation → final SOP.**
-
-### Grounded & Traceable Generation
-The final SOP isn't just AI-generated text; it is **grounded, traceable, and auditable back to the original documents**. Instructor will enforce structured citation output.
-
-Each generated claim must be traceable back to its origin, for example:
-> *"Employees must obtain manager approval before system access is provisioned."* **[C12]**
-
-With an accompanying citation index:
-```text
-[C12]
-Source: IT_Access_Policy.pdf
-Page: 14
-Section: Access Provisioning
-Chunk ID: chunk_8f31
 ```
-*(Later on, Jev will be added as a quality-control layer to validate whether these citations actually support the generated claims.)*
+                               ┌────────────────────────────────────────────────┐
+                               │           Injester / Beelzebuth Core           │
+                               │  Ingestion · Partitioning · Digitizer · Index  │
+                               └──────────────────────┬─────────────────────────┘
+                                                      │
+                         ┌────────────────────────────┼───────────────────────────┐
+                         ▼                            ▼                           ▼
+                 ┌───────────────┐           ┌──────────────────┐         ┌───────────────┐
+                 │  Terminal CLI │           │  Local Web SPA   │         │  MCP Server   │
+                 │  `injester`   │           │  `injester web`  │         │ `injester mcp`│
+                 └───────────────┘           └──────────────────┘         └───────────────┘
+```
 
-## Planned Architecture
+1. **Terminal CLI (`injester`)**: Fast local devouring, indexing, searching, and diagnostics directly from the command line.
+2. **Local Web Workbench (`injester web`)**: A high-performance React 19 single-page application served by FastAPI. Features side-by-side evidence inspection, live Markdown editing, clickable citation badges, and diagram rendering.
+3. **Model Context Protocol (`injester mcp`)**: Standard stdio JSON-RPC interface exposing document operations directly to AI tools like Claude Desktop, Cursor, and Windsurf.
 
-### 1. `extractor.py` (The Reader)
-- Uses `unstructured.partition.auto.partition` to read files.
-- Loops through elements (like `Title`, `NarrativeText`).
-- Maintains a running "current header" to tag all subsequent text elements, creating a hierarchical JSON representation of the file.
+---
 
-### 2. `combiner.py` (The Brain)
-- Driven by `instructor` and Pydantic models.
-- **Step 1 (Outline):** Takes the summaries of the selected input JSONs and asks the LLM to generate a combined `Outline` schema.
-- **Step 2 (Drafting):** Iterates over the outline. For each section, retrieves relevant chunks from the source JSONs (using FAISS + reranking) and generates the section content.
+## Command Reference
 
-### 3. `exporter.py` (The Writer)
-- Takes the final Pydantic objects generated by the combiner and formats them into a clean Markdown file, complete with headers, bullet points, and source citations.
+| Command | Description |
+| :--- | :--- |
+| `injester` | Display overview and available commands. |
+| `injester init` | Initialize the local workspace directory (`injester.db` and vector store). |
+| `injester md generate -f <file> -o <out.md>` | Devour a file directly into high-fidelity Markdown with tables and citations. |
+| `injester ingest <file>` | Ingest and index a document into the local workspace. |
+| `injester ingest <file> -o <out.md>` | Ingest, index, and save the digitized Markdown file. |
+| `injester documents list` | List locally stored documents and indexed chunk counts. |
+| `injester search "<query>"` | Semantic vector search across indexed evidence chunks. |
+| `injester diagram generate -f <file>` | Depict diagrams (BPMN 2.0 XML, Mermaid flowcharts, swimlanes). |
+| `injester web` | Start the local FastAPI server, serve the React workbench, and open the browser. |
+| `injester web --port 8765 --no-browser` | Run web server on custom port without automatically opening browser. |
+| `injester mcp` | Launch the local stdio MCP server for AI clients. |
+| `injester doctor` | Diagnose configuration, dependencies, and local workspace health. |
+| `injester config` | Inspect and configure active LLM, System-1 verifier, and storage settings. |
 
-## Setup Instructions
+---
 
-1. Activate the virtual environment:
-   ```bash
-   source venv/bin/activate
-   ```
-2. Install the dependencies:
-   ```bash
-   pip install -r requirements.txt
-   ```
-3. Create a `.env` file and supply your database and API keys (refer to `.env.example`).
-4. Run the automated tests:
-   ```bash
-   pytest -v
-   ```
-5. Launch the FastAPI server:
-   ```bash
-   uvicorn injester.api.app:app --reload --port 8000
-   ```
-   Interactive Swagger documentation is available at `http://localhost:8000/docs`.
+## Quickstart & Installation
+
+### 1. Prerequisites
+- Python 3.10+ (tested through Python 3.14)
+- Node.js 18+ (only needed if building frontend from source)
+
+### 2. Install Beelzebuth / Injester
+```bash
+# Clone repository
+git clone https://github.com/Jefino9488/Beelzebuth.git
+cd Beelzebuth
+
+# Create and activate virtual environment
+python3 -m venv venv
+source venv/bin/activate
+
+# Install dependencies and CLI
+pip install -e .
+```
+
+### 3. Initialize Workspace & Check Health
+```bash
+injester init
+injester doctor
+```
+
+### 4. Devour a Document from the Terminal
+```bash
+# Devour any PDF, Word document, or text file into Markdown
+injester md generate -f sample_docs/Incident_and_Revocation_Procedure.md -o output.md
+```
+
+### 5. Launch the Web Workbench
+```bash
+injester web
+```
+The browser will automatically open to `http://127.0.0.1:8000`.
+
+---
+
+## Web Workbench Overview
+
+The Beelzebuth Web Workbench (`injester web`) provides an intuitive dual-pane workspace:
+
+- **Top Devour Dropzone**: Drag and drop any document (`.pdf`, `.docx`, `.xlsx`, `.csv`, `.txt`, `.md`). Ingestion completes in ~1-2 seconds. Includes an active **Stop Devouring** button to abort at any time.
+- **Left Pane (Source Evidence Grounding)**: Displays the raw, immutable document text with sentence-level span IDs (`[S001]`). Hovering or clicking any span highlights the corresponding statement.
+- **Right Pane (Transmutation Studio)**:
+  - **Digital Markdown (.md)** *(Default Hero Tab)*:
+    - **Read Mode**: Cleanly rendered Markdown with interactive, clickable `[S###]` badges.
+    - **Edit Mode**: Built-in monospace Markdown editor for making instant modifications.
+    - **Download .md**: One-click download of the complete digitized file.
+    - **Copy Markdown**: Copies the full Markdown text and citation index to clipboard.
+  - **Diagram View**: Renders structural flowcharts and interactive node graphs of the document.
+  - **LLM Context**: Displays compression ratios, raw vs clean token counts, and chunk distributions.
+  - **Schema (JSON)**: Programmatic key-value schema with entailment confidence scores.
+- **Bottom Inquisitor Bar**: Type any candidate claim or hypothesis to run real System-1 NLI verification against source evidence.
+- **Settings Modal**: Configure your LLM provider (OpenRouter, Ollama, OpenAI) and discover free models with live filtering.
+
+---
+
+## Model Context Protocol (MCP) Integration
+
+Beelzebuth ships a local stdio MCP server. AI desktop clients can discover documents, run vector searches, and synthesize verified Markdown directly.
+
+### Claude Desktop Configuration
+Add to your `claude_desktop_config.json`:
+
+```json
+{
+  "mcpServers": {
+    "injester": {
+      "command": "/absolute/path/to/venv/bin/injester",
+      "args": ["mcp"]
+    }
+  }
+}
+```
+
+### Available MCP Tools
+- `list_documents`: Discover all locally ingested documents and chunk counts.
+- `ingest_document(path)`: Ingest and index any local document file.
+- `search_evidence(query, top_k)`: Semantic vector search across indexed chunks.
+- `generate_digest(topic, document_ids)`: Synthesize a citation-audited Markdown document.
+- `generate_diagram(document_id_or_path, output_dir)`: Generate Mermaid flowcharts and BPMN 2.0 XML.
+- `export_artifact(snapshot_id, format, output_path)`: Export diagrams or Markdown to disk.
+
+---
+
+## Architecture
+
+For an in-depth breakdown of the internal pipeline, data models, and span provenance engine, see the full architecture document:
+
+📖 **[System Architecture Specification](file:///home/jefino9488/.gemini/antigravity/brain/b140011b-3ea2-4229-8929-55af3e932f56/beelzebuth_architecture.md)**
+
+```
+┌──────────────────┐     ┌──────────────────────┐     ┌────────────────────────┐
+│  Input Document  │ ──> │ Document Partition   │ ──> │ Granular Span Registry │
+│ (.pdf, .docx...) │     │ (unstructured)       │     │ (Atomic S001... spans) │
+└──────────────────┘     └──────────────────────┘     └───────────┬────────────┘
+                                                                  │
+                                 ┌────────────────────────────────┴────────────────────────┐
+                                 ▼                                                         ▼
+                  ┌──────────────────────────────┐                         ┌──────────────────────────────┐
+                  │   High-Fidelity Digitizer    │                         │  Diagram Projection Engine   │
+                  │  • GFM Table Parser          │                         │  • Structural Flowcharts     │
+                  │  • Inline Mermaid Diagrams   │                         │  • BPMN 2.0 XML AST          │
+                  │  • Inline [S###] Citations   │                         │  • Swimlane Diagrams         │
+                  │  • Provenance Index Table    │                         └──────────────────────────────┘
+                  └──────────────┬───────────────┘
+                                 │
+                                 ▼
+                  ┌──────────────────────────────┐
+                  │     Digital Markdown (.md)   │
+                  │   (Editable & Exportable)    │
+                  └──────────────────────────────┘
+```
+
+---
+
+## Running Tests
+
+All core functionality is covered by automated unit and integration tests:
+
+```bash
+# Run all test suites
+pytest
+
+# Run interface & digitizer test suites
+pytest tests/test_cli.py tests/test_web.py tests/test_mcp.py tests/test_semantic_pipeline.py
+```
+
+---
+
+## License
+
+Apache 2.0. Open-source core.
