@@ -23,5 +23,6 @@ def get_instructor_client():
         max_retries=2,
     )
 
-    client = instructor.from_openai(raw_client)
+    client = instructor.from_openai(raw_client, mode=instructor.Mode.JSON)
     return client, model_name
+

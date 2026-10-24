@@ -133,20 +133,8 @@ def extract_knowledge_map(chunks: List[DocumentChunk], span_registry: SpanRegist
             ],
             temperature=0.0,
         )
-        # Ensure strict override based on source presence
-        if source_headings:
-            if not source_has_sla_section:
-                kmap.has_slas = False
-                kmap.sla_rules = []
-            if source_has_exception_section:
-                kmap.has_exceptions = True
+        if source_headings and not kmap.recommended_sections:
             kmap.recommended_sections = source_headings
-        else:
-            if not source_has_sla_section:
-                kmap.has_slas = False
-                kmap.sla_rules = []
-            if source_has_exception_section:
-                kmap.has_exceptions = True
 
         kmap.eligible_chunk_ids = eligible_ids
         return kmap
@@ -155,7 +143,7 @@ def extract_knowledge_map(chunks: List[DocumentChunk], span_registry: SpanRegist
             title="Standard Operating Procedure",
             summary="Synthesized operating procedure from source evidence.",
             topics=source_headings or ["Workflow Procedure"],
-            key_roles=["Operator", "Approver"],
+            key_roles=[],
             has_exceptions=source_has_exception_section,
             exception_rules=[],
             has_slas=source_has_sla_section,

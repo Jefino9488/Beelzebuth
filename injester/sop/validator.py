@@ -1,10 +1,19 @@
 import re
-from typing import List, Dict, Set, Optional, Union
+from typing import List, Dict, Set, Optional, Union, NamedTuple
 from pydantic import BaseModel, Field
 from injester.ingestion.schema import DocumentChunk
 from injester.sop.schemas import SOPDocument, SOPSection, CitationRef, ClaimCitation, SOPClaim
 from injester.sop.spans import SpanRegistry, SourceSpan
 from injester.sop.knowledge_map import extract_knowledge_map, DocumentKnowledgeMap, ExpectedRule
+
+class EntailmentVerdict(NamedTuple):
+    is_entailed: bool
+    confidence: float = 1.0
+    provider: str = "deterministic"
+    model: Optional[str] = None
+
+    def __bool__(self):
+        return bool(self.is_entailed)
 
 class ValidationReport(BaseModel):
     is_valid: bool = Field(description="True if there are zero critical errors")
@@ -26,6 +35,25 @@ class CitationValidator:
     verifies source-rule coverage, and detects unsupported procedural expansions.
     """
     CITATION_REGEX = re.compile(r'\[(S\d{3,4}|C\d+(?:\.\d+)?)\]')
+
+    def __init__(self, nli_verifier: Optional[Any] = None):
+        self.nli_verifier = nli_verifier
+        self._nli_initialized = False
+
+    def _get_nli(self) -> Optional[Any]:
+        if self.nli_verifier is not None:
+            return self.nli_verifier
+        if not self._nli_initialized:
+            self._nli_initialized = True
+            try:
+                from injester.semantic.verifiers.openjev import OpenJevVerifier
+                verifier = OpenJevVerifier(load_model=True)
+                verifier._ensure_model_loaded()
+                if verifier.model is not None:
+                    self.nli_verifier = verifier
+            except Exception:
+                self.nli_verifier = None
+        return self.nli_verifier
 
     def validate_document(
         self,
@@ -232,9 +260,9 @@ class CitationValidator:
             verified_citation_index=master_citation_index,
         )
 
-    def _verify_entailment(self, claim_text: str, span_text: str) -> bool:
+    def _verify_entailment(self, claim_text: str, span_text: str) -> EntailmentVerdict:
         """
-        Deterministic entailment verification.
+        Deterministic & NLI entailment verification.
         Verifies numerical consistency, currency/threshold fidelity, and entity alignment.
         """
         claim_lower = claim_text.lower()
@@ -251,7 +279,7 @@ class CitationValidator:
             num_clean = re.sub(r'[\$€£,%]', '', num)
             pattern = r'\b' + re.escape(num_clean) + r'\b'
             if not re.search(pattern, span_normalized):
-                return False
+                return EntailmentVerdict(is_entailed=False, confidence=0.0, provider="number_rule")
 
         # 2. Condition Phrase Verification: if claim introduces a condition/prerequisite (after, upon, etc.),
         # the condition's key content words must be anchored in the span.
@@ -267,7 +295,7 @@ class CitationValidator:
                 span_word_stems = {_stem_simple(sw) for sw in re.findall(r'\b[a-zA-Z]{4,}\b', span_lower)}
                 cond_in_span = any(_stem_simple(cw) in span_word_stems for cw in cond_words)
                 if not cond_in_span:
-                    return False
+                    return EntailmentVerdict(is_entailed=False, confidence=0.0, provider="condition_rule")
 
         # 3. Role / Actor Modifier Verification: if claim introduces role modifiers (e.g. senior, chief, head),
         # they must be present in the span.
@@ -276,36 +304,34 @@ class CitationValidator:
         span_words_all = set(re.findall(r'\b[a-zA-Z]{4,}\b', span_lower))
         for mod in role_modifiers:
             if mod in claim_words_all and mod not in span_words_all:
-                return False
+                return EntailmentVerdict(is_entailed=False, confidence=0.0, provider="role_modifier_rule")
 
-        # 4. Content word overlap with morphological stemming and bidirectional ratio
-        if not claim_words_all or not span_words_all:
-            return True
+        # 4. Exact text or normalization match
+        norm_claim = re.sub(r'[^\w\s]', '', clean_claim).strip()
+        norm_span = re.sub(r'[^\w\s]', '', span_lower).strip()
+        if norm_claim in norm_span:
+            return EntailmentVerdict(is_entailed=True, confidence=1.0, provider="exact_normalized_match")
 
-        def _stem(w: str) -> str:
-            w = w.lower()
-            for suffix in ['ies', 'ing', 'ed', 'es', 's']:
-                if w.endswith(suffix) and len(w) - len(suffix) >= 3:
-                    return w[:-len(suffix)]
-            return w
+        # 5. Semantic entailment via true NLI model (never lexical fallback)
+        nli = self._get_nli()
+        if nli is not None and getattr(nli, "model", None) is not None:
+            try:
+                probs = nli._predict_entailment_probs([(span_text, claim_text)])
+                if probs and probs[0] >= 0.65:
+                    return EntailmentVerdict(
+                        is_entailed=True,
+                        confidence=round(float(probs[0]), 4),
+                        provider="cross_encoder_nli",
+                        model=getattr(nli, "model_name", "nli-deberta-v3-small")
+                    )
+                return EntailmentVerdict(
+                    is_entailed=False,
+                    confidence=round(float(probs[0]) if probs else 0.0, 4),
+                    provider="cross_encoder_nli",
+                    model=getattr(nli, "model_name", "nli-deberta-v3-small")
+                )
+            except Exception:
+                return EntailmentVerdict(is_entailed=False, confidence=0.0, provider="cross_encoder_nli")
 
-        claim_stems = {_stem(w) for w in claim_words_all}
-        span_stems = {_stem(w) for w in span_words_all}
-        overlap_stems = claim_stems & span_stems
-
-        prefix_claim_matches = set()
-        prefix_span_matches = set()
-        for cw in claim_words_all:
-            for sw in span_words_all:
-                if cw[:4] == sw[:4] and len(cw) >= 4 and len(sw) >= 4:
-                    prefix_claim_matches.add(cw)
-                    prefix_span_matches.add(sw)
-
-        claim_match_count = max(len(overlap_stems), len(prefix_claim_matches))
-        span_match_count = max(len(overlap_stems), len(prefix_span_matches))
-
-        claim_ratio = claim_match_count / max(len(claim_words_all), 1)
-        span_ratio = span_match_count / max(len(span_words_all), 1)
-
-        # Entailed if claim covers span or span covers claim by at least 25%
-        return max(claim_ratio, span_ratio) >= 0.25
+        # If NLI is not available, we cannot verify entailment of non-exact claims
+        return EntailmentVerdict(is_entailed=False, confidence=0.0, provider="unmatched")
