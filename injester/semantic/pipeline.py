@@ -11,7 +11,7 @@ from typing import Dict, Any, Optional
 
 from injester.ingestion.extractor import DocumentExtractor
 from injester.ingestion.chunker import HierarchicalChunker
-from injester.sop.spans import SpanRegistry
+from injester.synthesis.spans import SpanRegistry
 from injester.semantic.schemas import (
     PropositionBatch,
     DualOutputResult,
@@ -127,7 +127,7 @@ class EvidenceFirstSemanticPipeline:
                 span_registry_hash=span_registry.compute_manifest_hash(),
                 span_registry=span_registry,
                 elements=elements,
-                sop_markdown=annotated_md,
+                digital_markdown=annotated_md,
             )
             print(
                 f"[PIPELINE {time.strftime('%H:%M:%S')}] [COMPLETE] Devoured in {total_latency:.2f}s | "
@@ -196,8 +196,8 @@ class EvidenceFirstSemanticPipeline:
         dual_result.elements = elements
 
         # Generate heading-based, citation-grounded readable Markdown digest
-        from injester.semantic.projections import render_sop_markdown
-        dual_result.sop_markdown = render_sop_markdown(
+        from injester.semantic.projections import render_document_markdown
+        dual_result.digital_markdown = render_document_markdown(
             dual_result.graph,
             span_registry=span_registry,
             defect_register=dual_result.defect_register
@@ -221,14 +221,14 @@ class EvidenceFirstSemanticPipeline:
 
     def _write_artifacts(self, result: DualOutputResult, out_dir: Path, span_registry: Optional[Any] = None):
         """
-        Deterministically renders BPMN, Mermaid, Markdown Defect Register, and Citation-Grounded SOP.md.
+        Deterministically renders BPMN, Mermaid, Markdown Defect Register, and Citation-Grounded DOCUMENT.md.
         """
         from injester.semantic.projections import (
             render_flowchart_mermaid,
             render_swimlane_mermaid,
             render_state_machine_mermaid,
             render_bpmn_20_xml,
-            render_sop_markdown,
+            render_document_markdown,
         )
 
         # JSON representations
@@ -239,14 +239,14 @@ class EvidenceFirstSemanticPipeline:
         (out_dir / "DEFECT_REGISTER.md").write_text(result.defect_register.to_markdown(), encoding="utf-8")
 
         # Citation-Grounded Document Markdown
-        if not result.sop_markdown:
-            result.sop_markdown = render_sop_markdown(
+        if not result.digital_markdown:
+            result.digital_markdown = render_document_markdown(
                 result.graph,
                 span_registry=span_registry,
                 defect_register=result.defect_register
             )
-        (out_dir / "DOCUMENT.md").write_text(result.sop_markdown, encoding="utf-8")
-        (out_dir / "digest.md").write_text(result.sop_markdown, encoding="utf-8")
+        (out_dir / "DOCUMENT.md").write_text(result.digital_markdown, encoding="utf-8")
+        (out_dir / "digest.md").write_text(result.digital_markdown, encoding="utf-8")
 
         # Deterministic AST Projections (Verified Graph Only)
         fc_md = render_flowchart_mermaid(result.graph)

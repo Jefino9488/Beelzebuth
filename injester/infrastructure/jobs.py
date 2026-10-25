@@ -1,7 +1,7 @@
 """
 Background Job Execution & Telemetry Engine.
 Provides asynchronous job dispatch (202 Accepted + job_id) and polling status endpoints
-for long-running operations: Document Ingestion, Process Graph Extraction, and SOP Generation.
+for long-running operations: Document Ingestion, Process Graph Extraction, and Digest Generation.
 """
 
 import uuid
@@ -21,7 +21,7 @@ class JobStatus(str, Enum):
 class JobType(str, Enum):
     INGESTION = "INGESTION"
     PROCESS_GRAPH = "PROCESS_GRAPH"
-    SOP_GENERATION = "SOP_GENERATION"
+    DIGEST_GENERATION = "DIGEST_GENERATION"
 
 class JobResponse(BaseModel):
     job_id: str

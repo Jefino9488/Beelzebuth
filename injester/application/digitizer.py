@@ -13,7 +13,7 @@ import re
 from html.parser import HTMLParser
 from typing import List, Dict, Any, Tuple, Optional
 from injester.ingestion.schema import NormalizedElement, DocumentChunk
-from injester.sop.spans import SpanRegistry, SourceSpan
+from injester.synthesis.spans import SpanRegistry, SourceSpan
 
 
 class HTMLTableParser(HTMLParser):

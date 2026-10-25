@@ -60,7 +60,7 @@ class ProcessGraphResponse(BaseModel):
     flowchart_mermaid: str = Field(description="Mermaid.js Flowchart syntax string")
     swimlane_mermaid: str = Field(description="Mermaid.js Swimlane syntax string")
     state_machine_mermaid: Optional[str] = Field(default=None, description="Mermaid.js State Machine syntax string if state transitions exist")
-    sop_markdown: Optional[str] = Field(default=None, description="Standard Operating Procedure in Markdown with granular citations and citation index")
+    digital_markdown: Optional[str] = Field(default=None, description="Digital Markdown procedure with granular citations and citation index")
 
 
 @router.post(
@@ -149,7 +149,7 @@ async def generate_process_graph_endpoint(
             flowchart_mermaid=fc_mmd,
             swimlane_mermaid=sw_mmd,
             state_machine_mermaid=sm_mmd,
-            sop_markdown=result.sop_markdown,
+            digital_markdown=result.digital_markdown,
         )
 
     except Exception as e:

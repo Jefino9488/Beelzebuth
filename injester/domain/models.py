@@ -184,7 +184,7 @@ class ProcessGraphSnapshot(Base):
 
 class GenerationRun(Base):
     """
-    Authoritative audit and lineage record of a Process Graph or SOP generation execution.
+    Authoritative audit and lineage record of a Process Graph or Digest generation execution.
     Tracks exact input versions, cryptographic source hashes, model configs, and freshness keys for 100% reproducibility.
     """
     __tablename__ = "generation_runs"
@@ -192,11 +192,11 @@ class GenerationRun(Base):
     id = Column(String(36), primary_key=True, default=generate_uuid)
     organisation_id = Column(String(36), ForeignKey("organisations.id", ondelete="CASCADE"), nullable=False, index=True)
     user_id = Column(String(36), ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True)
-    run_type = Column(String(32), nullable=False, index=True)  # 'process_graph' | 'sop'
+    run_type = Column(String(32), nullable=False, index=True)  # 'process_graph' | 'digest'
     input_file_version_ids = Column(JSON, default=list, nullable=False)  # List[str]
     input_hashes = Column(JSON, default=dict, nullable=False)  # Dict[str, str] (file_id -> sha256)
     output_snapshot_id = Column(String(36), ForeignKey("process_graph_snapshots.id", ondelete="SET NULL"), nullable=True, index=True)
-    output_sop_id = Column(String(36), nullable=True)
+    output_document_id = Column(String(36), nullable=True)
     output_defect_register_id = Column(String(36), nullable=True)
     config_hash = Column(String(64), nullable=False)  # SHA-256 of configuration & prompt settings
     freshness_key = Column(String(64), nullable=False, index=True)  # hash(sorted(file_version_ids) + config_hash)

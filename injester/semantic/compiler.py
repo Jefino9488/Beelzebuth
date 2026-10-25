@@ -15,7 +15,7 @@ The compiler is strictly responsible for:
 import re
 from typing import List, Dict, Tuple, Optional, Set
 from collections import deque
-from injester.sop.spans import SpanRegistry
+from injester.synthesis.spans import SpanRegistry
 from injester.semantic.schemas import (
     AtomicProposition,
     LayaVerdict,

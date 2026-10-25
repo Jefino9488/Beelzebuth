@@ -11,7 +11,7 @@ import instructor
 
 from injester.config import settings
 from injester.infrastructure.heartbeat import HeartbeatLogger
-from injester.sop.spans import SpanRegistry
+from injester.synthesis.spans import SpanRegistry
 from injester.semantic.schemas import PropositionBatch, AtomicProposition
 
 

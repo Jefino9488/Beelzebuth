@@ -18,7 +18,7 @@ from injester.semantic.schemas import (
     System1Verdict,
     RawTypedDecisions,
 )
-from injester.sop.spans import SpanRegistry
+from injester.synthesis.spans import SpanRegistry
 from injester.semantic.verifiers.base import System1Verifier, UNSET as _UNSET
 from injester.semantic.verifiers.policy import System1ValidationPolicy
 

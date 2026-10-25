@@ -617,7 +617,7 @@ class DualOutputResult(BaseModel):
 
     graph: GroundedProcessGraph
     defect_register: AmbiguityRegister
-    sop_markdown: Optional[str] = Field(default=None, description="Generated traceable Markdown SOP procedure with citations")
+    digital_markdown: Optional[str] = Field(default=None, description="Generated traceable Digital Markdown document with citations")
     snapshot_id: Optional[str] = Field(default=None, description="Persisted ProcessGraphSnapshot ID")
     generation_run_id: Optional[str] = Field(default=None, description="Persisted GenerationRun ID")
     span_registry_hash: Optional[str] = Field(default=None, description="SHA-256 manifest hash of the underlying SpanRegistry")

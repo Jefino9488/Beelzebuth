@@ -6,7 +6,7 @@ and topological validity on GroundedProcessGraph ASTs without heuristic semantic
 
 from typing import List, Tuple, Optional, Set, Dict
 
-from injester.sop.spans import SpanRegistry
+from injester.synthesis.spans import SpanRegistry
 from injester.semantic.schemas import GroundedProcessGraph
 
 

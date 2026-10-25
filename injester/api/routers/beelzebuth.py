@@ -411,7 +411,6 @@ async def devour_document(
                     "status": "ENTAILED",
                 },
             },
-            "sop_markdown": annotated_md,
             "digital_markdown": annotated_md,
             "defects": defects,
         }

@@ -12,9 +12,9 @@ from injester.ingestion.extractor import DocumentExtractor
 from injester.ingestion.chunker import HierarchicalChunker
 from injester.ingestion.schema import DocumentChunk
 from injester.vectorstore.faiss_store import FaissVectorStore
-from injester.sop.generator import SOPGenerator
-from injester.sop.validator import CitationValidator, ValidationReport
-from injester.sop.assembler import SOPAssembler
+from injester.synthesis.generator import DigestGenerator
+from injester.synthesis.validator import CitationValidator, ValidationReport
+from injester.synthesis.assembler import DigestAssembler
 from injester.semantic.pipeline import EvidenceFirstSemanticPipeline
 from injester.semantic.schemas import DualOutputResult
 from injester.semantic.laya_adapter import LayaSystem1Verifier
@@ -25,7 +25,7 @@ class InjesterPipeline:
     - Backend tenant permission validation
     - Document ingestion & hierarchical chunking
     - FAISS vector indexing per tenant
-    - Citation-grounded SOP generation with Instructor
+    - Citation-grounded digital markdown synthesis with Instructor
     - Evidence-first Grounded Process Graph generation with local Laya System-1 verification
     - Claim validation and traceable Markdown output
     """
@@ -41,7 +41,7 @@ class InjesterPipeline:
         self.chunker = HierarchicalChunker()
         self.vector_store = FaissVectorStore()
         self.validator = CitationValidator()
-        self.assembler = SOPAssembler()
+        self.assembler = DigestAssembler()
         self._semantic_pipeline = semantic_pipeline
 
     def close(self):
@@ -110,22 +110,22 @@ class InjesterPipeline:
 
         return file_record, version_record, chunks
 
-    def generate_sop(
+    def generate_digest(
         self,
         sec_ctx: SecurityContext,
         topic_goal: str,
         file_ids: Optional[List[str]] = None
     ) -> Tuple[str, ValidationReport]:
         """
-        Generates an auditable, citation-grounded SOP from tenant documents:
+        Generates an auditable, citation-grounded document digest from tenant documents:
         1. Collects accessible files and all associated chunks for the tenant.
         2. Synthesizes outline + grounded sections with citations via Instructor.
         3. Validates citations and claim grounding.
-        4. Compiles final traceable Markdown SOP with Citation Index.
+        4. Compiles final traceable Markdown digest with Citation Index.
         """
         tenant_id = sec_ctx.organisation_id
         if not tenant_id and not sec_ctx.is_super_admin:
-            raise AccessDeniedError("Tenant organisation required to generate SOP.")
+            raise AccessDeniedError("Tenant organisation required to generate digest.")
 
         # Collect accessible files for this principal with resource-level ACL
         accessible_files = {f.id: f for f in self.repo.list_visible_files(sec_ctx)}
@@ -148,9 +148,9 @@ class InjesterPipeline:
         if not chunks_to_use:
             raise ValueError(f"No indexed documents found for tenant '{tenant_id}'. Please ingest files first.")
 
-        # Build SOP using LLM + Instructor
-        generator = SOPGenerator(self.vector_store)
-        sop_doc = generator.build_sop(
+        # Build document digest using LLM + Instructor
+        generator = DigestGenerator(self.vector_store)
+        doc = generator.build_digest(
             tenant_id=tenant_id or "platform",
             topic_goal=topic_goal,
             all_tenant_chunks=chunks_to_use
@@ -158,11 +158,11 @@ class InjesterPipeline:
 
         # Validate Citations & Claim Grounding
         validation_report = self.validator.validate_document(
-            sop_doc, chunks_to_use, knowledge_map=getattr(generator, 'last_kmap', None)
+            doc, chunks_to_use, knowledge_map=getattr(generator, 'last_kmap', None)
         )
 
         # Assemble Markdown with Citation Index and Validator-derived Audit Badge
-        markdown_sop = self.assembler.assemble_markdown(sop_doc, validation_report)
+        markdown_doc = self.assembler.assemble_markdown(doc, validation_report)
 
         # Record GenerationRun lineage
         file_version_ids = []
@@ -173,27 +173,24 @@ class InjesterPipeline:
                 file_version_ids.append(latest.id)
                 doc_hashes[f.id] = latest.file_hash
 
-        cfg_hash = self._compute_config_hash(run_type="sop")
+        cfg_hash = self._compute_config_hash(run_type="digest")
         self.repo.save_generation_run(
             sec_ctx=sec_ctx,
-            run_type="sop",
+            run_type="digest",
             input_file_version_ids=file_version_ids,
             input_hashes=doc_hashes,
             config_hash=cfg_hash,
-            output_sop_id=sop_doc.title,
+            output_document_id=doc.title,
         )
 
         # Record audit log
         self.repo._audit(
             sec_ctx,
-            "GENERATE_SOP",
-            f"Generated SOP '{sop_doc.title}' with {len(sop_doc.sections)} sections and {len(validation_report.verified_citation_index)} verified citations."
+            "GENERATE_DIGEST",
+            f"Generated digest '{doc.title}' with {len(doc.sections)} sections and {len(validation_report.verified_citation_index)} verified citations."
         )
 
-        return markdown_sop, validation_report
-
-    # Alias for document digest generation
-    generate_digest = generate_sop
+        return markdown_doc, validation_report
 
     def generate_process_graph(
         self,
@@ -283,7 +280,7 @@ class InjesterPipeline:
                 "bpmn_xml": getattr(result, "bpmn_xml", "") or "",
                 "mermaid": getattr(result, "mermaid_diagram", "") or "",
                 "defect_md": getattr(result, "defect_markdown", "") or "",
-                "sop_md": getattr(result, "sop_markdown", "") or "",
+                "digital_md": getattr(result, "digital_markdown", "") or "",
             }
         )
         result.snapshot_id = snapshot.id

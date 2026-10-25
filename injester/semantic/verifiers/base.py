@@ -14,7 +14,7 @@ from injester.semantic.schemas import (
     ModalityType,
     EpistemicStatus,
 )
-from injester.sop.spans import SpanRegistry
+from injester.synthesis.spans import SpanRegistry
 
 
 # Shared sentinel distinguishing "argument not provided" (resolve from runtime settings)

@@ -5,7 +5,7 @@ build-backend = "hatchling.build"
 [project]
 name = "injester"
 version = "0.1.0"
-description = "Beelzebuth (Injester Community) — Local document ingestion, SOP generation, and process graph engine"
+description = "Beelzebuth (Injester Community) — Local document ingestion, digital markdown synthesis, and process graph engine"
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [

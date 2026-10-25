@@ -667,5 +667,4 @@ def render_document_markdown(
     return "\n".join(lines)
 
 
-# Alias for backward-compatibility
-render_sop_markdown = render_document_markdown
+

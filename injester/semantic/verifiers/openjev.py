@@ -16,7 +16,7 @@ from injester.semantic.schemas import (
     System1Verdict,
     RawTypedDecisions,
 )
-from injester.sop.spans import SpanRegistry
+from injester.synthesis.spans import SpanRegistry
 from injester.semantic.verifiers.base import System1Verifier
 from injester.semantic.verifiers.policy import System1ValidationPolicy
 
@@ -54,6 +54,9 @@ class OpenJevVerifier(System1Verifier):
             return
         self._model_loaded = True
         is_testing = os.getenv("TESTING", "false").lower() in ("true", "1")
+        if self.device == "cuda" and torch.cuda.is_available():
+            torch.cuda.empty_cache()
+
         try:
             from transformers import AutoModelForSequenceClassification, AutoTokenizer
             self.tokenizer = AutoTokenizer.from_pretrained(
@@ -212,6 +215,9 @@ class OpenJevVerifier(System1Verifier):
         """
         if not pairs:
             return []
+
+        if self.device == "cuda" and torch.cuda.is_available():
+            torch.cuda.empty_cache()
 
         entailment_probs: List[float] = []
         for i in range(0, len(pairs), batch_size):

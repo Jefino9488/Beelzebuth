@@ -480,7 +480,7 @@ class TenantRepository:
         input_hashes: dict,
         config_hash: str,
         output_snapshot_id: Optional[str] = None,
-        output_sop_id: Optional[str] = None,
+        output_document_id: Optional[str] = None,
         output_defect_register_id: Optional[str] = None,
     ) -> GenerationRun:
         """Records a GenerationRun audit entry with deterministic freshness key."""
@@ -505,7 +505,7 @@ class TenantRepository:
             input_file_version_ids=input_file_version_ids,
             input_hashes=input_hashes,
             output_snapshot_id=output_snapshot_id,
-            output_sop_id=output_sop_id,
+            output_document_id=output_document_id,
             output_defect_register_id=output_defect_register_id,
             config_hash=config_hash,
             freshness_key=freshness_key,
