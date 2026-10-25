@@ -15,12 +15,15 @@ approval checks across both application and MCP interfaces without duplicated lo
 
 import os
 import io
+import time
+import secrets
 import hmac
 import zipfile
 import uuid
 import hashlib
 from pathlib import Path
 from typing import List, Dict, Optional, Any, Tuple, Union
+from pydantic import BaseModel, Field
 
 from injester.config import settings
 from injester.domain.auth import SecurityContext, AccessDeniedError
@@ -49,6 +52,18 @@ from injester.application.documents import DocumentService
 from injester.application.retrieval import RetrievalService
 
 
+class ApprovalTokenRecord(BaseModel):
+    """Cryptographically random, single-use, time-expiring human approval token record."""
+    token: str
+    changeset_id: str
+    document_id: str
+    document_version: str
+    approver_id: str
+    created_at: float
+    expires_at: float
+    consumed: bool = False
+
+
 class DocumentToolService:
     """
     Unified application service for all document operations.
@@ -61,6 +76,66 @@ class DocumentToolService:
         self._changesets: Dict[str, ChangeSet] = {}
         self._changeset_to_session: Dict[str, str] = {}
         self._verification_reports: Dict[str, RoundTripVerificationReport] = {}
+        self._approval_tokens: Dict[str, ApprovalTokenRecord] = {}
+
+    def _save_changeset(self, cs: ChangeSet) -> None:
+        """Persists ChangeSet in-memory and to disk for cross-process access (MCP, API, CLI)."""
+        self._changesets[cs.changeset_id] = cs
+        if cs.file_path:
+            self._changeset_to_session[cs.changeset_id] = cs.file_path
+        try:
+            cs_dir = settings.STORAGE_DIR / "changesets"
+            cs_dir.mkdir(parents=True, exist_ok=True)
+            target = cs_dir / f"{cs.changeset_id}.json"
+            target.write_text(cs.model_dump_json(indent=2))
+        except Exception:
+            pass
+
+    def _get_changeset(self, changeset_id: str) -> Optional[ChangeSet]:
+        """Retrieves ChangeSet from memory cache or persisted disk storage."""
+        cs = self._changesets.get(changeset_id)
+        if cs:
+            return cs
+        try:
+            cs_dir = settings.STORAGE_DIR / "changesets"
+            target = cs_dir / f"{changeset_id}.json"
+            if target.exists():
+                cs = ChangeSet.model_validate_json(target.read_text())
+                self._changesets[changeset_id] = cs
+                if cs.file_path:
+                    self._changeset_to_session[changeset_id] = cs.file_path
+                return cs
+        except Exception:
+            pass
+        return None
+
+    def _save_approval_token(self, record: ApprovalTokenRecord) -> None:
+        """Persists single-use ApprovalTokenRecord in-memory and to disk."""
+        self._approval_tokens[record.token] = record
+        try:
+            tok_dir = settings.STORAGE_DIR / "approval_tokens"
+            tok_dir.mkdir(parents=True, exist_ok=True)
+            target = tok_dir / f"{record.token}.json"
+            target.write_text(record.model_dump_json(indent=2))
+        except Exception:
+            pass
+
+    def _get_approval_token(self, token: str) -> Optional[ApprovalTokenRecord]:
+        """Retrieves single-use ApprovalTokenRecord from memory cache or persisted disk storage."""
+        token_clean = token.strip() if token else ""
+        rec = self._approval_tokens.get(token_clean)
+        if rec:
+            return rec
+        try:
+            tok_dir = settings.STORAGE_DIR / "approval_tokens"
+            target = tok_dir / f"{token_clean}.json"
+            if target.exists():
+                rec = ApprovalTokenRecord.model_validate_json(target.read_text())
+                self._approval_tokens[token_clean] = rec
+                return rec
+        except Exception:
+            pass
+        return None
 
     # ------------------------------------------------------------------
     # Document & Session Resolution
@@ -86,8 +161,13 @@ class DocumentToolService:
                 settings.assert_path_allowed(s.file_path, operation="read")
                 return s.file_path
 
-        # If it looks like a path or existing candidate on disk:
+        # SECURITY: If target is a sensitive file or path, assert path allowed immediately (fails fast with AccessDeniedError)
         candidate = Path(document_id_or_path).expanduser().resolve()
+        raw_path = Path(document_id_or_path)
+        if settings.is_sensitive_path(candidate) or settings.is_sensitive_path(raw_path):
+            settings.assert_path_allowed(candidate, operation="read")
+
+        # If it looks like a path or existing candidate on disk:
         if candidate.exists() and candidate.is_file():
             settings.assert_path_allowed(candidate, operation="read")
             return str(candidate)
@@ -95,6 +175,8 @@ class DocumentToolService:
         # If it's a relative path inside an authorized document root:
         for root in settings.get_allowed_roots():
             sub_cand = (root / document_id_or_path).resolve()
+            if settings.is_sensitive_path(sub_cand):
+                settings.assert_path_allowed(sub_cand, operation="read")
             if sub_cand.exists() and sub_cand.is_file():
                 settings.assert_path_allowed(sub_cand, operation="read")
                 return str(sub_cand)
@@ -115,6 +197,10 @@ class DocumentToolService:
 
         # If it is an absolute path outside authorized document roots, reject immediately
         if os.path.isabs(document_id_or_path):
+            settings.assert_path_allowed(candidate, operation="read")
+
+        # If it contains path separators or traversal, assert path boundary to trigger AccessDeniedError
+        if "/" in document_id_or_path or "\\" in document_id_or_path or ".." in document_id_or_path:
             settings.assert_path_allowed(candidate, operation="read")
 
         raise FileNotFoundError(
@@ -393,7 +479,8 @@ class DocumentToolService:
             command.expected_document_version = session.version_id
 
         changeset = self.pipeline.propose_edit(session, command)
-        self._changesets[changeset.changeset_id] = changeset
+        changeset.file_path = session.file_path
+        self._save_changeset(changeset)
         self._changeset_to_session[changeset.changeset_id] = session.document_id
 
         return changeset.model_dump()
@@ -468,35 +555,105 @@ class DocumentToolService:
         sec_ctx: Optional[SecurityContext] = None,
     ) -> Dict[str, Any]:
         """Retrieves an existing ChangeSet by ID."""
-        cs = self._changesets.get(changeset_id)
+        cs = self._get_changeset(changeset_id)
         if not cs:
             raise KeyError(f"ChangeSet '{changeset_id}' not found.")
         return cs.model_dump()
 
-    def generate_approval_token(self, changeset_id: str) -> str:
+    def issue_approval_token(
+        self,
+        changeset_id: str,
+        approver: Union[SecurityContext, str] = "authorized_human",
+        ttl_seconds: int = 900,
+    ) -> str:
         """
-        Generates an HMAC-SHA256 human approval token for a proposed ChangeSet.
-        When human reviewers inspect the preview diff in the workbench or CLI,
-        this token authorizes execution when relayed to an AI assistant.
+        Issues a cryptographically random, time-bounded (15m default), single-use approval token.
+        Can only be invoked by an authorized human operator via the Visual Workbench or CLI.
+        Bound to the specific ChangeSet ID, active document version, and approving human identity.
         """
-        cs = self._changesets.get(changeset_id)
+        cs = self._get_changeset(changeset_id)
         if not cs:
             raise KeyError(f"ChangeSet '{changeset_id}' not found.")
-        key = settings.APPROVAL_SIGNING_KEY or settings.JWT_SECRET
-        token = hmac.new(
-            key.encode("utf-8"),
-            f"human_approval_token:{cs.changeset_id}:{cs.document_id}:{cs.document_version}".encode("utf-8"),
-            hashlib.sha256
-        ).hexdigest()
+
+        approver_id = (
+            approver.user_id if isinstance(approver, SecurityContext)
+            else approver.email if hasattr(approver, "email") and approver.email
+            else str(approver)
+        )
+        token = f"appr_{secrets.token_urlsafe(32)}"
+        now = time.time()
+        record = ApprovalTokenRecord(
+            token=token,
+            changeset_id=cs.changeset_id,
+            document_id=cs.document_id,
+            document_version=cs.document_version,
+            approver_id=approver_id,
+            created_at=now,
+            expires_at=now + ttl_seconds,
+            consumed=False,
+        )
+        self._save_approval_token(record)
         return token
 
+    def generate_approval_token(self, changeset_id: str) -> str:
+        """Backward-compatible alias for human approval token generation."""
+        return self.issue_approval_token(changeset_id)
+
+    def verify_and_consume_approval_token(
+        self,
+        changeset_id: str,
+        token: str,
+    ) -> ApprovalTokenRecord:
+        """
+        Validates the approval token against the changeset and atomically marks it consumed.
+        Rejects invalid, expired, mismatched, or already-consumed tokens with AccessDeniedError.
+        """
+        token_clean = token.strip() if token else ""
+        record = self._get_approval_token(token_clean)
+        if not record:
+            raise AccessDeniedError(
+                f"Approval authorization failed: Invalid approval_token for ChangeSet '{changeset_id}'."
+            )
+
+        if record.changeset_id != changeset_id:
+            raise AccessDeniedError(
+                f"Approval authorization failed: Token was issued for ChangeSet '{record.changeset_id}', not '{changeset_id}'."
+            )
+
+        cs = self._get_changeset(changeset_id)
+        if cs and record.document_version != cs.document_version:
+            raise AccessDeniedError(
+                "Approval authorization failed: Document version changed since token was issued."
+            )
+
+        if time.time() > record.expires_at:
+            raise AccessDeniedError(
+                f"Approval authorization failed: Approval token has expired (TTL {int(record.expires_at - record.created_at)}s elapsed)."
+            )
+
+        if record.consumed:
+            raise AccessDeniedError(
+                "Approval authorization failed: Approval token has already been consumed (single-use replay detected)."
+            )
+
+        # Atomically mark consumed to prevent reuse
+        record.consumed = True
+        self._save_approval_token(record)
+        return record
+
     def verify_approval_token(self, changeset_id: str, token: str) -> bool:
-        """Verifies whether a candidate approval token matches the expected authorization token."""
-        try:
-            expected = self.generate_approval_token(changeset_id)
-            return hmac.compare_digest(token.strip(), expected)
-        except Exception:
+        """Read-only check if an approval token is valid without consuming it."""
+        token_clean = token.strip() if token else ""
+        record = self._get_approval_token(token_clean)
+        if not record:
             return False
+        if record.changeset_id != changeset_id:
+            return False
+        if time.time() > record.expires_at:
+            return False
+        if record.consumed:
+            return False
+        return True
 
     def preview_changeset(
         self,
@@ -505,14 +662,20 @@ class DocumentToolService:
     ) -> Dict[str, Any]:
         """
         Generates a human-readable before-and-after preview diff of the proposed ChangeSet,
-        including structural impact analysis and human approval token.
+        including structural impact analysis.
+        SECURITY: Does NOT expose human approval credentials to AI clients.
         """
-        cs = self._changesets.get(changeset_id)
+        cs = self._get_changeset(changeset_id)
         if not cs:
             raise KeyError(f"ChangeSet '{changeset_id}' not found.")
 
-        doc_id = self._changeset_to_session.get(changeset_id, cs.document_id)
+        doc_id = self._changeset_to_session.get(changeset_id, cs.file_path or cs.document_id)
         session = self._sessions.get(doc_id)
+        if not session and doc_id:
+            try:
+                session = self.get_or_create_session(doc_id, sec_ctx)
+            except Exception:
+                session = None
 
         preview = {
             "changeset_id": cs.changeset_id,
@@ -525,7 +688,6 @@ class DocumentToolService:
             "affected_blocks": cs.impact.affected_block_ids,
             "rationale": cs.command.rationale,
             "can_apply": cs.status in COMPILABLE_STATUSES,
-            "approval_token": self.generate_approval_token(cs.changeset_id),
             "diff_summary": {},
         }
 
@@ -576,26 +738,25 @@ class DocumentToolService:
         3. Explicit Unattended Mode: If ALLOW_UNATTENDED_MCP_APPROVAL or APPROVAL_MODE=unattended.
         4. Rejects unattended autonomous AI approval when running in standard manual mode.
         """
-        cs = self._changesets.get(changeset_id)
+        cs = self._get_changeset(changeset_id)
         if not cs:
             raise KeyError(f"ChangeSet '{changeset_id}' not found.")
 
-        doc_id = self._changeset_to_session.get(changeset_id, cs.document_id)
+        doc_id = self._changeset_to_session.get(changeset_id, cs.file_path or cs.document_id)
         session = self._sessions.get(doc_id)
         if not session:
             session = self.get_or_create_session(doc_id, sec_ctx)
+        elif cs.file_path and session.file_path != cs.file_path:
+            session = self.get_or_create_session(cs.file_path, sec_ctx)
 
         # Determine authorization provenance
         is_human_session = isinstance(approver, SecurityContext) or isinstance(sec_ctx, SecurityContext)
         is_token_authorized = False
+        token_record = None
 
         if approval_token:
-            if self.verify_approval_token(changeset_id, approval_token):
-                is_token_authorized = True
-            else:
-                raise AccessDeniedError(
-                    f"Approval authorization failed: Invalid approval_token for ChangeSet '{changeset_id}'."
-                )
+            token_record = self.verify_and_consume_approval_token(changeset_id, approval_token)
+            is_token_authorized = True
 
         if not is_human_session and not is_token_authorized:
             unattended_enabled = (
@@ -606,14 +767,17 @@ class DocumentToolService:
                 raise AccessDeniedError(
                     f"Autonomous AI approval rejected: ChangeSet '{changeset_id}' requires explicit human authorization. "
                     f"Authorize this change via the Web Workbench, CLI ('beelzebuth approve {changeset_id}'), "
-                    f"supply the human approval_token, or set APPROVAL_MODE=unattended to enable unattended autonomous execution."
+                    f"supply an out-of-band human approval_token, or set APPROVAL_MODE=unattended in server environment."
                 )
             effective_approver = approver or "mcp:unattended_agent"
         else:
-            if is_token_authorized:
-                effective_approver = approver or f"human:token_{approval_token[:8]}"
+            if is_token_authorized and token_record:
+                effective_approver = token_record.approver_id
+            elif is_human_session:
+                human_ctx = approver if isinstance(approver, SecurityContext) else sec_ctx
+                effective_approver = human_ctx.user_id if human_ctx else "authorized_human"
             else:
-                effective_approver = approver or sec_ctx or "authorized_human"
+                effective_approver = "authorized_human"
 
         approved_cs = self.pipeline.approve_changeset(
             session=session,
@@ -623,7 +787,7 @@ class DocumentToolService:
             signing_key=signing_key,
         )
 
-        self._changesets[approved_cs.changeset_id] = approved_cs
+        self._save_changeset(approved_cs)
         return approved_cs.model_dump()
 
     def apply_changeset(
@@ -637,14 +801,16 @@ class DocumentToolService:
         reopens the file, and runs one-to-one block verification.
         Validates filesystem destination boundaries to prevent directory escapes.
         """
-        cs = self._changesets.get(changeset_id)
+        cs = self._get_changeset(changeset_id)
         if not cs:
             raise KeyError(f"ChangeSet '{changeset_id}' not found.")
 
-        doc_id = self._changeset_to_session.get(changeset_id, cs.document_id)
+        doc_id = self._changeset_to_session.get(changeset_id, cs.file_path or cs.document_id)
         session = self._sessions.get(doc_id)
         if not session:
             session = self.get_or_create_session(doc_id, sec_ctx)
+        elif cs.file_path and session.file_path != cs.file_path:
+            session = self.get_or_create_session(cs.file_path, sec_ctx)
 
         if output_path:
             settings.assert_path_allowed(output_path, operation="write")
@@ -728,7 +894,7 @@ class DocumentToolService:
         # Resolve target ChangeSet if supplied
         cs: Optional[ChangeSet] = None
         if changeset_id:
-            cs = self._changesets.get(changeset_id)
+            cs = self._get_changeset(changeset_id)
 
         affected_bids: Set[str] = set()
         if cs:
@@ -860,6 +1026,29 @@ class DocumentToolService:
             "recompiled_path": str(recomp_path),
             "changeset_id": changeset_id,
             "is_verified": is_verified,
+            "pillars": {
+                "operation_correctness": {
+                    "verified": operation_correctness,
+                    "scope": "Target block mutated to match requested change command payload",
+                },
+                "structural_integrity": {
+                    "verified": structural_integrity,
+                    "scope": "Block count, document hierarchy, and section sequences intact",
+                },
+                "content_preservation": {
+                    "verified": content_preservation,
+                    "scope": "100% of unaffected blocks identical with zero textual drift",
+                },
+                "formatting_preservation": {
+                    "verified": formatting_preservation,
+                    "scope": "OOXML styles.xml, numbering.xml, and run formatting unaltered",
+                },
+            },
+            "unverified_scope": [
+                "semantic_intent_adequacy",
+                "domain_factuality",
+                "procedural_optimality",
+            ],
             "operation_correctness": operation_correctness,
             "structural_integrity": structural_integrity,
             "content_preservation": content_preservation,

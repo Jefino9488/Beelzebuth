@@ -16,6 +16,7 @@ import os
 import shutil
 import zipfile
 import tempfile
+import time
 import pytest
 
 from injester.config import settings
@@ -113,12 +114,13 @@ def test_document_tools_stage2_propose_and_review(sample_docx):
     assert prop["impact"]["is_valid"] is True
     assert "block-003" in prop["impact"]["affected_block_ids"]
 
-    # 2. Preview proposed changeset (including approval_token generation)
+    # 2. Preview proposed changeset (pure diff and validation, NO approval token exposed)
     preview = service.preview_changeset(cs_id)
     assert preview["changeset_id"] == cs_id
     assert preview["is_valid"] is True
-    assert preview["approval_token"] is not None
-    assert len(preview["approval_token"]) == 64
+    assert "approval_token" not in preview
+    token = service.issue_approval_token(cs_id)
+    assert token.startswith("appr_")
     assert preview["diff_summary"]["target_block_id"] == "block-003"
     assert preview["diff_summary"]["after"] == "Revised corporate workstation deployment guidelines."
     assert "corporate developer workstations" in preview["diff_summary"]["before"]
@@ -246,8 +248,12 @@ def test_mcp_tools_complete_editing_flow(sample_docx, temp_output_docx):
     preview = mcp_server.preview_changeset(cs_id)
     assert preview["is_valid"] is True
     assert preview["diff_summary"]["after"] == new_instruction
-    human_token = preview["approval_token"]
+    assert "approval_token" not in preview
+
+    # Out-of-band human reviewer issues approval token
+    human_token = mcp_server.document_tools.issue_approval_token(cs_id)
     assert human_token is not None
+    assert human_token.startswith("appr_")
 
     # Stage 3: MCP Approval with Human Token & Recompilation
     approval = mcp_server.approve_changeset(
@@ -330,9 +336,10 @@ def test_mcp_tools_section_reorder(sample_docx, temp_output_docx):
     prev = mcp_server.preview_changeset(cs_id)
     assert prev["diff_summary"]["target_heading_block_id"] == target_heading
     assert prev["diff_summary"]["before_heading_block_id"] == anchor_heading
+    assert "approval_token" not in prev
 
-    # Approve with human token and apply
-    token = prev["approval_token"]
+    # Approve with out-of-band human token and apply
+    token = mcp_server.document_tools.issue_approval_token(cs_id)
     mcp_server.approve_changeset(cs_id, rationale="Approved section move.", approval_token=token)
     applied = mcp_server.apply_changeset(cs_id, output_path=temp_output_docx)
     assert applied["is_successful"] is True
@@ -380,7 +387,7 @@ def test_filesystem_boundary_rejection(sample_docx):
         new_text="Filesystem write boundary test",
     )
     cs_id = prop["changeset_id"]
-    token = service.preview_changeset(cs_id)["approval_token"]
+    token = service.issue_approval_token(cs_id)
     service.approve_changeset(cs_id, approval_token=token)
 
     forbidden_dest = "/tmp/forbidden_workspace_escape/malicious.docx"
@@ -404,7 +411,7 @@ def test_verification_contract_detects_deliberate_corruption(sample_docx, temp_o
         new_text="Legitimate verified edit.",
     )
     cs_id = prop["changeset_id"]
-    token = service.preview_changeset(cs_id)["approval_token"]
+    token = service.issue_approval_token(cs_id)
     service.approve_changeset(cs_id, approval_token=token)
     service.apply_changeset(cs_id, output_path=temp_output_docx)
 
@@ -507,6 +514,67 @@ def test_invalid_document_or_block_error_handling(sample_docx):
 
     with pytest.raises(KeyError):
         service.approve_changeset("cs_invalid_99999")
+
+
+def test_approval_token_expiration_and_replay_prevention(sample_docx):
+    """P0 Security: Human approval tokens expire after TTL and are strictly single-use (replay prevention)."""
+    service = DocumentToolService()
+    prop = service.propose_text_edit(
+        sample_docx,
+        block_id="block-003",
+        new_text="Token security test edit.",
+    )
+    cs_id = prop["changeset_id"]
+
+    # 1. Test Expired Token
+    short_lived_token = service.issue_approval_token(cs_id, approver="human_tester", ttl_seconds=1)
+    time.sleep(1.2)
+    with pytest.raises(AccessDeniedError) as exc_info:
+        service.approve_changeset(cs_id, approval_token=short_lived_token)
+    assert "expired" in str(exc_info.value).lower()
+
+    # 2. Test Single-Use (Atomic Consumption)
+    valid_token = service.issue_approval_token(cs_id, approver="human_tester", ttl_seconds=60)
+    # First approval succeeds
+    approved = service.approve_changeset(cs_id, approval_token=valid_token)
+    assert approved["status"] == "APPROVED"
+
+    # Replay attempt with same token must fail
+    with pytest.raises(AccessDeniedError) as exc_info:
+        service.approve_changeset(cs_id, approval_token=valid_token)
+    assert "already been consumed" in str(exc_info.value).lower()
+
+
+def test_sensitive_files_strictly_inaccessible():
+    """P0 Security: Sensitive files (.env, config.env, signing keys, databases) are inaccessible through all document tools."""
+    service = DocumentToolService()
+
+    sensitive_targets = [
+        ".env",
+        "config.env",
+        ".approval_signing_key",
+        "injester.db",
+        "storage/injester.db",
+        ".git/config",
+    ]
+
+    for target in sensitive_targets:
+        # inspect_document rejects sensitive targets
+        with pytest.raises(AccessDeniedError) as exc:
+            service.inspect_document(target)
+        assert "access violation" in str(exc.value).lower()
+
+        # find_blocks rejects sensitive targets
+        with pytest.raises(AccessDeniedError):
+            service.find_blocks(target, query="test")
+
+        # propose_text_edit rejects sensitive targets
+        with pytest.raises(AccessDeniedError):
+            service.propose_text_edit(target, block_id="block-001", new_text="exploit")
+
+        # MCP ingest_document rejects sensitive targets
+        with pytest.raises(AccessDeniedError):
+            mcp_server.ingest_document(target)
 
     with pytest.raises(KeyError):
         service.apply_changeset("cs_invalid_99999")

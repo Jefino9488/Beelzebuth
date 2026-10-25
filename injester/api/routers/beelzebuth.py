@@ -458,6 +458,11 @@ class PreviewChangeSetRequest(BaseModel):
     changeset_id: str
 
 
+class IssueApprovalTokenRequest(BaseModel):
+    changeset_id: str
+    ttl_seconds: Optional[int] = 900
+
+
 class VerifyDocumentRequest(BaseModel):
     source_path: str
     recompiled_path: str
@@ -516,7 +521,7 @@ def propose_document_changeset(req: ProposeEditRequest):
 
 @router.post("/changeset/preview")
 def preview_document_changeset(req: PreviewChangeSetRequest):
-    """Generates before/after diff summary and single-use human approval token."""
+    """Generates before/after diff summary and structural impact analysis (no approval token)."""
     changeset = document_tools._changesets.get(req.changeset_id)
     if not changeset:
         raise HTTPException(
@@ -531,6 +536,41 @@ def preview_document_changeset(req: PreviewChangeSetRequest):
             detail=f"Failed to generate preview: {str(e)}",
         )
     return preview
+
+
+@router.post("/changeset/issue-token")
+def issue_changeset_approval_token(
+    req: IssueApprovalTokenRequest,
+    sec_ctx: SecurityContext = Depends(get_current_sec_ctx),
+):
+    """
+    Explicitly issues an expiring, single-use human approval token for a ChangeSet.
+    Requires an authenticated human security context (sec_ctx).
+    """
+    changeset = document_tools._changesets.get(req.changeset_id)
+    if not changeset:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"ChangeSet '{req.changeset_id}' not found.",
+        )
+    try:
+        token = document_tools.issue_approval_token(
+            changeset_id=req.changeset_id,
+            approver=sec_ctx,
+            ttl_seconds=req.ttl_seconds or 900,
+        )
+        return {
+            "status": "success",
+            "changeset_id": req.changeset_id,
+            "approval_token": token,
+            "expires_in_seconds": req.ttl_seconds or 900,
+            "approver_id": sec_ctx.user_id,
+        }
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Failed to issue approval token: {str(e)}",
+        )
 
 
 @router.post("/changeset/approve")

@@ -171,17 +171,82 @@ class Settings:
     ALLOW_ARBITRARY_FILESYSTEM_ACCESS: bool = os.getenv("ALLOW_ARBITRARY_FILESYSTEM_ACCESS", "false").lower() in ("true", "1", "yes")
     ALLOWED_DOCUMENT_ROOTS_CONFIG: str = os.getenv("ALLOWED_DOCUMENT_ROOTS", "")
 
+    DENIED_SENSITIVE_NAMES: set = {
+        ".env",
+        "config.env",
+        ".approval_signing_key",
+        "injester.db",
+        ".git",
+        ".gitignore",
+        "id_rsa",
+        "id_ed25519",
+        "known_hosts",
+    }
+
+    DENIED_SENSITIVE_EXTENSIONS: set = {
+        ".env",
+        ".key",
+        ".pem",
+        ".crt",
+        ".db",
+        ".sqlite",
+        ".sqlite3",
+        ".py",
+        ".pyc",
+        ".sh",
+        ".bash",
+        ".zsh",
+        ".so",
+        ".dylib",
+        ".dll",
+    }
+
+    def is_sensitive_path(self, target: Path) -> bool:
+        """
+        Checks whether a target path refers to an environment secret, private key,
+        application database, git internal directory, or executable/code asset.
+        """
+        for part in target.parts:
+            if part in (".git", ".venv", "venv", "__pycache__"):
+                return True
+            if part.startswith(".") and len(part) > 1 and part not in (".", ".."):
+                if part in (".injester",):
+                    continue
+                return True
+
+        filename = target.name.lower()
+        if filename in self.DENIED_SENSITIVE_NAMES:
+            return True
+
+        if filename.startswith(".env") or filename.endswith(".env"):
+            return True
+
+        for secret_token in ("secret", "credential", "password", "token", "signing_key"):
+            if secret_token in filename:
+                return True
+
+        suffix = target.suffix.lower()
+        if suffix in self.DENIED_SENSITIVE_EXTENSIONS:
+            return True
+
+        return False
+
     def get_allowed_roots(self) -> List[Path]:
-        """Returns the canonical set of authorized directories for reading and writing documents."""
+        """
+        Returns the canonical set of authorized directories for reading and writing documents.
+        Strictly limits default roots to the dedicated workspace directory, storage directory,
+        and designated sample documents directory. Repository root is explicitly excluded to prevent
+        unintended credential, source, and configuration leaks.
+        """
         roots: List[Path] = [
             self.WORKSPACE_DIR.resolve(),
             self.STORAGE_DIR.resolve(),
-            Path.cwd().resolve(),
-            self.BASE_DIR.resolve(),
         ]
-        sample_dir = (Path.cwd() / "sample_docs").resolve()
+        sample_dir = (self.BASE_DIR / "sample_docs").resolve()
         if sample_dir.exists():
             roots.append(sample_dir)
+        elif (Path.cwd() / "sample_docs").exists():
+            roots.append((Path.cwd() / "sample_docs").resolve())
 
         if self.ALLOWED_DOCUMENT_ROOTS_CONFIG:
             for entry in self.ALLOWED_DOCUMENT_ROOTS_CONFIG.split(","):
@@ -196,16 +261,21 @@ class Settings:
 
     def is_path_allowed(self, path: Union[str, Path], operation: str = "read") -> bool:
         """
-        Validates whether a candidate path falls strictly within authorized document roots.
+        Validates whether a candidate path falls strictly within authorized document roots
+        and does not reference sensitive credentials or environment secrets.
         Resolves symlinks completely before boundary checking to prevent directory escaping.
         """
-        if self.ALLOW_ARBITRARY_FILESYSTEM_ACCESS:
-            return True
-
         try:
             target = Path(path).expanduser().resolve()
         except Exception:
             return False
+
+        # SECURITY: Strictly deny access to sensitive files (secrets, keys, db, .env)
+        if self.is_sensitive_path(target):
+            return False
+
+        if self.ALLOW_ARBITRARY_FILESYSTEM_ACCESS:
+            return True
 
         allowed_roots = self.get_allowed_roots()
         for root in allowed_roots:
@@ -230,11 +300,17 @@ class Settings:
     def assert_path_allowed(self, path: Union[str, Path], operation: str = "read") -> Path:
         """
         Asserts that the resolved path is within authorized boundaries, raising
-        AccessDeniedError if outside authorized document roots.
+        AccessDeniedError if outside authorized document roots or if sensitive.
         """
         from injester.domain.auth import AccessDeniedError
 
         target = Path(path).expanduser().resolve()
+        if self.is_sensitive_path(target):
+            raise AccessDeniedError(
+                f"Filesystem access violation: Sensitive file access denied for '{target.name}'. "
+                "Access to configuration secrets, environment files, private keys, and application databases is strictly forbidden."
+            )
+
         if not self.is_path_allowed(target, operation=operation):
             roots_str = ", ".join(str(r) for r in self.get_allowed_roots())
             raise AccessDeniedError(

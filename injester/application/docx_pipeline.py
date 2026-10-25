@@ -249,6 +249,7 @@ class DocxRoundTripPipeline:
             impact=impact,
             document_id=session.document_id,
             document_version=session.version_id,
+            file_path=session.file_path,
         )
 
     def approve_changeset(

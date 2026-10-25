@@ -161,6 +161,7 @@ class ChangeSet(BaseModel):
     """Immutable audit record of an evaluated or applied document change."""
     changeset_id: str = Field(default_factory=lambda: f"cs_{uuid.uuid4().hex[:10]}")
     document_id: str
+    file_path: Optional[str] = None
     document_version: str
     command: TypedChangeCommand
     impact: ChangeImpact
@@ -675,6 +676,7 @@ class ChangeEngine:
         impact: ChangeImpact,
         document_id: str,
         document_version: str,
+        file_path: Optional[str] = None,
     ) -> ChangeSet:
         """Constructs an auditable ChangeSet representing the proposed mutation."""
         new_order = list(current_step_order)
@@ -694,6 +696,7 @@ class ChangeEngine:
 
         return ChangeSet(
             document_id=document_id,
+            file_path=file_path,
             document_version=document_version,
             command=command,
             impact=impact,

@@ -18,6 +18,7 @@ from injester.semantic.change_engine import (
 )
 from injester.infrastructure.docx_patcher import DocxPackagePatcher, DocxPatchError
 from injester.application.docx_pipeline import DocxRoundTripPipeline, DocxSession
+from injester.config import settings
 
 
 @pytest.fixture
@@ -30,8 +31,10 @@ def sample_docx_path():
 
 @pytest.fixture
 def temp_output_docx():
-    """Temporary file path for recompiled DOCX output."""
-    fd, path = tempfile.mkstemp(suffix=".docx")
+    """Temporary file path for recompiled DOCX output inside authorized storage."""
+    out_dir = settings.STORAGE_DIR / "recompiled"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    fd, path = tempfile.mkstemp(suffix=".docx", dir=str(out_dir))
     os.close(fd)
     yield path
     if os.path.exists(path):
@@ -964,15 +967,20 @@ def test_beelzebuth_api_full_preview_recompile_and_verify_lifecycle():
         assert prop_res.status_code == 200, prop_res.text
         cs_id = prop_res.json()["changeset_id"]
 
-        # 3. Preview Change and obtain approval token
+        # 3. Preview Change (diff and validation only; no token exposed)
         prev_res = client.post("/api/v1/beelzebuth/changeset/preview", json={"changeset_id": cs_id})
         assert prev_res.status_code == 200, prev_res.text
         prev_data = prev_res.json()
         assert prev_data["is_valid"] is True
-        token = prev_data["approval_token"]
-        assert token is not None
+        assert "approval_token" not in prev_data
 
-        # 4. Approve Change with Token
+        # 4. Explicit Human Approval Token Issuance
+        tok_res = client.post("/api/v1/beelzebuth/changeset/issue-token", json={"changeset_id": cs_id})
+        assert tok_res.status_code == 200, tok_res.text
+        token = tok_res.json()["approval_token"]
+        assert token.startswith("appr_")
+
+        # 5. Approve Change with Token
         appr_res = client.post("/api/v1/beelzebuth/changeset/approve", json={
             "session_id": sess_id,
             "changeset_id": cs_id,
@@ -982,6 +990,16 @@ def test_beelzebuth_api_full_preview_recompile_and_verify_lifecycle():
         assert appr_res.status_code == 200, appr_res.text
         assert appr_res.json()["status"] == "APPROVED"
         assert len(appr_res.json()["approval_signature"]) == 64
+
+        # 5b. Verify single-use token consumption (replay attempt rejected)
+        replay_res = client.post("/api/v1/beelzebuth/changeset/approve", json={
+            "session_id": sess_id,
+            "changeset_id": cs_id,
+            "rationale": "Replay attempt",
+            "approval_token": token,
+        })
+        assert replay_res.status_code == 400
+        assert "already been consumed" in replay_res.json()["detail"].lower()
 
         # 5. Recompile and inspect verification breakdown
         recomp_res = client.post("/api/v1/beelzebuth/changeset/recompile", json={

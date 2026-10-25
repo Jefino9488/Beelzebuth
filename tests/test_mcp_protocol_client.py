@@ -117,19 +117,23 @@ def test_mcp_protocol_full_editing_workflow():
                     cs_id = prop_data["changeset_id"]
                     assert prop_data["status"] == "PROPOSED"
 
-                    # Preview and obtain human approval token
+                    # Preview (pure diff only; NEVER exposes approval token to AI client)
                     prev_res = await session.call_tool("preview_changeset", {"changeset_id": cs_id})
                     prev_data = json.loads(prev_res.content[0].text)
                     assert prev_data["is_valid"] is True
                     assert prev_data["diff_summary"]["after"] == new_text
-                    token = prev_data["approval_token"]
-                    assert token is not None
+                    assert "approval_token" not in prev_data
+
+                    # Out-of-band Human Reviewer explicitly issues single-use approval token
+                    from injester.application.document_tools import document_tools
+                    human_token = document_tools.issue_approval_token(cs_id, approver="lead_engineer_bob")
+                    assert human_token.startswith("appr_")
 
                     # Stage 3: Approve with Human Token
                     appr_res = await session.call_tool("approve_changeset", {
                         "changeset_id": cs_id,
-                        "rationale": "Human reviewer approved via MCP client",
-                        "approval_token": token,
+                        "rationale": "Human reviewer approved via out-of-band token",
+                        "approval_token": human_token,
                     })
                     appr_data = json.loads(appr_res.content[0].text)
                     assert appr_data["status"] == "APPROVED"
@@ -197,13 +201,26 @@ def test_mcp_protocol_unauthorized_approval_rejected():
                 prop_data = json.loads(prop_res.content[0].text)
                 cs_id = prop_data["changeset_id"]
 
-                # Attempt self-approval without token
+                # 1. Preview must NOT leak approval_token to the AI agent
+                prev_res = await session.call_tool("preview_changeset", {"changeset_id": cs_id})
+                prev_data = json.loads(prev_res.content[0].text)
+                assert prev_data["is_valid"] is True
+                assert "approval_token" not in prev_data
+
+                # 2. Attempt self-approval without token
                 appr_res = await session.call_tool("approve_changeset", {
                     "changeset_id": cs_id,
                     "rationale": "I am self-approving",
                 })
-                # When tool raises AccessDeniedError, MCP server returns tool error
                 assert appr_res.is_error is True or "error" in appr_res.content[0].text.lower()
+
+                # 3. Attempt self-approval with fabricated/forged token
+                appr_res_forged = await session.call_tool("approve_changeset", {
+                    "changeset_id": cs_id,
+                    "rationale": "Fabricated token exploit",
+                    "approval_token": "appr_forged_token_attempt_12345",
+                })
+                assert appr_res_forged.is_error is True or "error" in appr_res_forged.content[0].text.lower()
 
     asyncio.run(_run())
 
@@ -224,5 +241,25 @@ def test_mcp_protocol_filesystem_boundary_rejection():
                 # Attempt to inspect /etc/passwd over MCP protocol
                 res = await session.call_tool("inspect_document", {"document_id_or_path": "/etc/passwd"})
                 assert res.is_error is True or "violation" in res.content[0].text.lower()
+
+    asyncio.run(_run())
+
+
+def test_mcp_protocol_secrets_strictly_denied():
+    """P0 Security: Sensitive files (.env, config.env, signing keys, databases) are rejected over stdio MCP."""
+    async def _run():
+        server_params = StdioServerParameters(
+            command=sys.executable,
+            args=["-m", "injester.mcp"],
+            env={**os.environ, "ALLOW_ARBITRARY_FILESYSTEM_ACCESS": "false"},
+        )
+
+        async with stdio_client(server_params) as (read_stream, write_stream):
+            async with ClientSession(read_stream, write_stream) as session:
+                await session.initialize()
+
+                for secret_file in [".env", "config.env", ".approval_signing_key", "injester.db"]:
+                    res = await session.call_tool("inspect_document", {"document_id_or_path": secret_file})
+                    assert res.is_error is True or "violation" in res.content[0].text.lower() or "denied" in res.content[0].text.lower()
 
     asyncio.run(_run())

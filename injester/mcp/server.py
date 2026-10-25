@@ -23,6 +23,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger("injester.mcp")
 
+from injester.config import settings
 from injester.application.manager import manager
 from injester.application.documents import DocumentService
 from injester.application.retrieval import RetrievalService
@@ -184,10 +185,13 @@ def preview_changeset(changeset_id: str) -> Dict[str, Any]:
     """
     Generate a human-readable before-and-after diff preview for a proposed ChangeSet,
     highlighting affected blocks, text changes, and dependency validation.
+    SECURITY: Never exposes human approval credentials or tokens to the model.
     """
     logger.info("Executing tool: preview_changeset for: %s", changeset_id)
     manager.ensure_initialized()
-    return document_tools.preview_changeset(changeset_id)
+    preview = document_tools.preview_changeset(changeset_id)
+    preview.pop("approval_token", None)
+    return preview
 
 
 # ===========================================================================
@@ -265,7 +269,7 @@ def ingest_document(path: str) -> Dict[str, Any]:
     """
     logger.info("Executing tool: ingest_document for path: %s", path)
     manager.ensure_initialized()
-    file_path = Path(path).expanduser().resolve()
+    file_path = settings.assert_path_allowed(path, operation="read")
     if not file_path.exists():
         raise FileNotFoundError(f"File not found: {path}")
 
