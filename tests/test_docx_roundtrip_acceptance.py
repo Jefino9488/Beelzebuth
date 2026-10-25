@@ -1466,3 +1466,87 @@ def test_resequence_step_prefixes_split_across_runs():
     assert DocxPackagePatcher._get_paragraph_text(p_split2).strip() == "Step 1: Run diagnostic tools"
 
 
+def test_resequence_number_split_across_multiple_runs_with_distinct_properties():
+    """
+    OOXML Edge Case: When the step number itself is split across multiple runs with distinct
+    run properties (e.g., '1' in blue run, '2' in red run for 'Step 12:'), resequencing distributes
+    the replacement digits across the numeric runs while preserving each run's distinct <w:rPr> properties.
+    """
+    from lxml import etree
+    from injester.infrastructure.docx_patcher import DocxPackagePatcher, W_NS
+
+    xml_template = f"""<w:document xmlns:w="{W_NS}">
+        <w:body>
+            <w:p>
+                <w:r><w:rPr><w:b/></w:rPr><w:t>Step </w:t></w:r>
+                <w:r><w:rPr><w:b/><w:color w:val="0000FF"/></w:rPr><w:t>1</w:t></w:r>
+                <w:r><w:rPr><w:b/><w:color w:val="FF0000"/></w:rPr><w:t>2</w:t></w:r>
+                <w:r><w:rPr><w:i/></w:rPr><w:t>: Initialize database cluster</w:t></w:r>
+            </w:p>
+        </w:body>
+    </w:document>"""
+
+    # Case 1: Shrinking digit count (from '12' to '1')
+    root1 = etree.fromstring(xml_template.encode("utf-8"))
+    body1 = root1.find(f"{{{W_NS}}}body")
+    p1 = body1.find(f"{{{W_NS}}}p")
+
+    DocxPackagePatcher._resequence_literal_step_prefixes(
+        body=body1,
+        target_p=p1,
+        procedure_paragraphs=[p1],
+    )
+
+    runs1 = p1.findall(f".//{{{W_NS}}}r")
+    assert len(runs1) == 4
+    # Run 0: "Step " (bold, untouched)
+    assert runs1[0].find(f"{{{W_NS}}}t").text == "Step "
+    assert runs1[0].find(f"{{{W_NS}}}rPr/{{{W_NS}}}b") is not None
+    # Run 1: "1" (retains blue color)
+    assert runs1[1].find(f"{{{W_NS}}}t").text == "1"
+    assert runs1[1].find(f"{{{W_NS}}}rPr/{{{W_NS}}}color").get(f"{{{W_NS}}}val") == "0000FF"
+    # Run 2: "" (empty, but retains red color in rPr)
+    assert runs1[2].find(f"{{{W_NS}}}t").text == ""
+    assert runs1[2].find(f"{{{W_NS}}}rPr/{{{W_NS}}}color").get(f"{{{W_NS}}}val") == "FF0000"
+    # Run 3: ": Initialize database cluster" (italic, untouched)
+    assert runs1[3].find(f"{{{W_NS}}}t").text == ": Initialize database cluster"
+    assert runs1[3].find(f"{{{W_NS}}}rPr/{{{W_NS}}}i") is not None
+    assert DocxPackagePatcher._get_paragraph_text(p1).strip() == "Step 1: Initialize database cluster"
+
+    # Case 2: Multi-paragraph resequencing where second paragraph receives multi-digit number ('12' -> '2')
+    # and first paragraph is 'Step 1:' so counter increments to '2'
+    xml_multi = f"""<w:document xmlns:w="{W_NS}">
+        <w:body>
+            <w:p>
+                <w:r><w:t>Step 1: First item</w:t></w:r>
+            </w:p>
+            <w:p>
+                <w:r><w:rPr><w:b/></w:rPr><w:t>Step </w:t></w:r>
+                <w:r><w:rPr><w:b/><w:color w:val="0000FF"/></w:rPr><w:t>1</w:t></w:r>
+                <w:r><w:rPr><w:b/><w:color w:val="FF0000"/></w:rPr><w:t>2</w:t></w:r>
+                <w:r><w:rPr><w:i/></w:rPr><w:t>: Second item</w:t></w:r>
+            </w:p>
+        </w:body>
+    </w:document>"""
+    root_m = etree.fromstring(xml_multi.encode("utf-8"))
+    body_m = root_m.find(f"{{{W_NS}}}body")
+    pm_elems = body_m.findall(f"{{{W_NS}}}p")
+    p_first, p_second = pm_elems[0], pm_elems[1]
+
+    DocxPackagePatcher._resequence_literal_step_prefixes(
+        body=body_m,
+        target_p=p_second,
+        procedure_paragraphs=[p_first, p_second],
+    )
+
+    runs_second = p_second.findall(f".//{{{W_NS}}}r")
+    assert runs_second[0].find(f"{{{W_NS}}}t").text == "Step "
+    assert runs_second[1].find(f"{{{W_NS}}}t").text == "2"
+    assert runs_second[1].find(f"{{{W_NS}}}rPr/{{{W_NS}}}color").get(f"{{{W_NS}}}val") == "0000FF"
+    assert runs_second[2].find(f"{{{W_NS}}}t").text == ""
+    assert runs_second[2].find(f"{{{W_NS}}}rPr/{{{W_NS}}}color").get(f"{{{W_NS}}}val") == "FF0000"
+    assert runs_second[3].find(f"{{{W_NS}}}t").text == ": Second item"
+    assert DocxPackagePatcher._get_paragraph_text(p_second).strip() == "Step 2: Second item"
+
+
+

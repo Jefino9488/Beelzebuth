@@ -813,9 +813,10 @@ class DocxPackagePatcher:
                 num_start = len(prefix_word)
                 num_end = num_start + len(_old_num)
 
+                # First pass: identify runs that overlap the number range [num_start, num_end)
+                # and compute their respective slice lengths to preserve run properties per digit
+                overlapping_runs_info = []
                 offset = 0
-                num_inserted = False
-
                 for r in runs:
                     t_elem = r.find(f"{{{W_NS}}}t")
                     if t_elem is None or t_elem.text is None:
@@ -826,25 +827,42 @@ class DocxPackagePatcher:
                     run_end = offset + t_len
                     offset = run_end
 
-                    # Run is completely before the number (e.g. holds "Step ")
-                    if run_end <= num_start:
+                    if run_end <= num_start or run_start >= num_end:
                         continue
 
-                    # Run is completely after the number (e.g. holds ": " or instruction text)
-                    if run_start >= num_end:
-                        continue
+                    overlap_start = max(run_start, num_start)
+                    overlap_end = min(run_end, num_end)
+                    overlap_len = max(0, overlap_end - overlap_start)
 
-                    # Run overlaps the number range [num_start, num_end)
                     before_len = max(0, num_start - run_start)
                     after_start = min(t_len, max(0, num_end - run_start))
 
-                    before_part = t_val[:before_len]
-                    after_part = t_val[after_start:]
+                    overlapping_runs_info.append({
+                        "run": r,
+                        "t_elem": t_elem,
+                        "overlap_len": overlap_len,
+                        "before_part": t_val[:before_len],
+                        "after_part": t_val[after_start:],
+                    })
 
-                    if not num_inserted:
-                        t_elem.text = before_part + new_num_str + after_part
-                        num_inserted = True
+                # Second pass: distribute new_num_str across overlapping runs
+                # preserving each digit's individual run properties (<w:rPr>)
+                remaining_new = new_num_str
+                num_runs = len(overlapping_runs_info)
+
+                for idx, info in enumerate(overlapping_runs_info):
+                    t_elem = info["t_elem"]
+                    before_part = info["before_part"]
+                    after_part = info["after_part"]
+
+                    if idx == num_runs - 1:
+                        # Last overlapping run receives all remaining digits
+                        chunk = remaining_new
+                        remaining_new = ""
                     else:
-                        t_elem.text = before_part + after_part
+                        take = min(info["overlap_len"], len(remaining_new))
+                        chunk = remaining_new[:take]
+                        remaining_new = remaining_new[take:]
 
+                    t_elem.text = before_part + chunk + after_part
                     t_elem.set("{http://www.w3.org/XML/1998/namespace}space", "preserve")
