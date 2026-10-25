@@ -135,8 +135,13 @@ def reconstruct_digital_markdown(
     cited_spans_used: List[Tuple[str, str, str, str]] = []  # (span_id, loc, sec, text)
     seen_span_ids = set()
 
-    # Map span text to span ID for inline tagging
-    text_to_span: Dict[str, Tuple[str, str, str]] = {}  # text -> (span_id, loc, sec)
+    # Map span text to list of candidate spans to safely track duplicate text across locations
+    text_to_spans: Dict[str, List[Tuple[str, str, str]]] = {}  # text -> list of (span_id, loc, sec)
+    norm_to_spans: Dict[str, List[Tuple[str, str, str]]] = {}
+
+    def _norm(t: str) -> str:
+        return re.sub(r"\s+", " ", t).strip().lower()
+
     if span_registry and hasattr(span_registry, "spans_by_id"):
         for sid, span in span_registry.spans_by_id.items():
             if not sid.startswith("S_"):  # Only sequential S001...
@@ -144,19 +149,113 @@ def reconstruct_digital_markdown(
                 if len(s_text) > 8:
                     loc = getattr(span, "location", "") or "Source"
                     sec = getattr(span, "section", "") or "General"
-                    text_to_span[s_text] = (sid, loc, sec)
+                    info = (sid, loc, sec)
+                    text_to_spans.setdefault(s_text, []).append(info)
+                    norm_k = _norm(s_text)
+                    norm_to_spans.setdefault(norm_k, []).append(info)
 
-    def find_span(snippet: str) -> Optional[Tuple[str, str, str]]:
+    def _disambiguate_candidates(
+        cand_list: List[Tuple[str, str, str]],
+        sec_context: Optional[str] = None,
+        loc_context: Optional[str] = None
+    ) -> Optional[Tuple[str, str, str]]:
+        """
+        Resolves multiple matching spans for identical or near-identical text.
+        If all candidates share the same span_id, returns it.
+        If candidate span_ids differ, attempts to match section or location context.
+        If ambiguous ties remain or no context matches uniquely, returns None.
+        """
+        if not cand_list:
+            return None
+        distinct_sids = {c[0] for c in cand_list}
+        if len(distinct_sids) == 1:
+            return cand_list[0]
+
+        filtered = list(cand_list)
+        if sec_context:
+            norm_sec = _norm(sec_context)
+            sec_matches = [
+                c for c in filtered
+                if _norm(c[2]) in norm_sec or norm_sec in _norm(c[2])
+            ]
+            if sec_matches:
+                filtered = sec_matches
+
+        if len({c[0] for c in filtered}) > 1 and loc_context:
+            norm_loc = _norm(loc_context)
+            loc_matches = [
+                c for c in filtered
+                if _norm(c[1]) in norm_loc or norm_loc in _norm(c[1])
+            ]
+            if loc_matches:
+                filtered = loc_matches
+
+        final_distinct = {c[0] for c in filtered}
+        if len(final_distinct) == 1:
+            return filtered[0]
+
+        return None
+
+    def find_span(
+        snippet: str,
+        sec_context: Optional[str] = None,
+        loc_context: Optional[str] = None
+    ) -> Optional[Tuple[str, str, str]]:
+        """
+        Locates the evidence span for a given text snippet.
+        Prioritizes exact and normalized text matching with duplicate disambiguation.
+        For partial overlap, requires substantial phrase length (>= 4 words)
+        and high Jaccard/containment similarity (>= 0.85), rejecting ambiguous
+        multiple candidate matches to prevent assigning incorrect citations.
+        """
         snip = snippet.strip()
         if not snip:
             return None
-        if snip in text_to_span:
-            return text_to_span[snip]
-        # Partial match
-        for s_text, info in text_to_span.items():
-            if snip in s_text or s_text in snip:
-                return info
-        return None
+
+        # 1. Exact string match
+        if snip in text_to_spans:
+            match = _disambiguate_candidates(text_to_spans[snip], sec_context, loc_context)
+            if match:
+                return match
+
+        # 2. Normalized match (casing, whitespace)
+        norm_snip = _norm(snip)
+        if norm_snip in norm_to_spans:
+            match = _disambiguate_candidates(norm_to_spans[norm_snip], sec_context, loc_context)
+            if match:
+                return match
+
+        # 3. Substantial token-level match for multi-word phrases (minimum 4 significant words)
+        words = re.findall(r"\b\w{2,}\b", norm_snip)
+        if len(words) < 4:
+            # Short phrases or single words NEVER match via partial overlap
+            return None
+
+        snip_set = set(words)
+        candidates: List[Tuple[float, Tuple[str, str, str]]] = []
+        for norm_s_text, infos in norm_to_spans.items():
+            s_words = set(re.findall(r"\b\w{2,}\b", norm_s_text))
+            if not s_words:
+                continue
+            inter = len(snip_set & s_words)
+            union = len(snip_set | s_words)
+            jaccard = inter / union if union else 0.0
+            containment = inter / len(snip_set)
+            if jaccard >= 0.85 or (containment >= 0.90 and len(s_words) <= len(snip_set) * 1.3):
+                chosen_info = _disambiguate_candidates(infos, sec_context, loc_context)
+                if chosen_info:
+                    candidates.append((jaccard, chosen_info))
+
+        if not candidates:
+            return None
+
+        candidates.sort(key=lambda x: x[0], reverse=True)
+        # Ambiguity detection: if top 2 candidates are from different spans with close scores, reject as ambiguous
+        if len(candidates) > 1 and (candidates[0][0] - candidates[1][0] < 0.05):
+            if candidates[0][1][0] != candidates[1][1][0]:
+                return None
+
+        return candidates[0][1]
 
     def register_used_span(info: Optional[Tuple[str, str, str]], text_snippet: str):
         if info:
@@ -174,8 +273,13 @@ def reconstruct_digital_markdown(
         el_type = (el.element_type or "NarrativeText").lower()
         sec_path = el.metadata.section_path if el.metadata else []
         depth = len(sec_path) if sec_path else 1
+        el_sec = " > ".join(sec_path) if sec_path else ""
+        el_loc = (
+            getattr(el.metadata, "source_location", "")
+            or (f"Page {el.metadata.page_number}" if el.metadata and el.metadata.page_number else "")
+        )
 
-        span_info = find_span(text)
+        span_info = find_span(text, el_sec, el_loc)
         span_badge = f" [{span_info[0]}]" if span_info else ""
         if span_info:
             register_used_span(span_info, text)
@@ -217,7 +321,7 @@ def reconstruct_digital_markdown(
                     s_clean = s.strip()
                     if not s_clean:
                         continue
-                    s_span_info = find_span(s_clean)
+                    s_span_info = find_span(s_clean, el_sec, el_loc)
                     if s_span_info:
                         register_used_span(s_span_info, s_clean)
                         ann_sentences.append(f"{s_clean} [{s_span_info[0]}]")
