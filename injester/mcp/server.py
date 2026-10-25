@@ -198,14 +198,22 @@ def preview_changeset(changeset_id: str) -> Dict[str, Any]:
 def approve_changeset(
     changeset_id: str,
     rationale: str = "",
+    approval_token: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
     Authorize and approve a proposed ChangeSet.
+    Security Boundary: In default manual mode, requires human authorization via approval_token
+    (obtained from diff preview review in the Visual Workbench or CLI).
+    Unattended autonomous execution requires explicit APPROVAL_MODE=unattended configuration.
     Computes an immutable HMAC-SHA256 signature binding the change payload to the active document version.
     """
-    logger.info("Executing tool: approve_changeset for: %s", changeset_id)
+    logger.info("Executing tool: approve_changeset for: %s (token_provided=%s)", changeset_id, bool(approval_token))
     manager.ensure_initialized()
-    return document_tools.approve_changeset(changeset_id=changeset_id, rationale=rationale)
+    return document_tools.approve_changeset(
+        changeset_id=changeset_id,
+        rationale=rationale,
+        approval_token=approval_token,
+    )
 
 
 @mcp_app.tool()

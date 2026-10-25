@@ -1,6 +1,6 @@
 import os
 from pathlib import Path
-from typing import Optional
+from typing import Optional, List, Union, Set
 from dotenv import load_dotenv
 
 # Load .env file
@@ -156,6 +156,89 @@ class Settings:
         for orig in os.getenv("ALLOWED_ORIGINS", "http://localhost:8000,http://127.0.0.1:8000,http://localhost:5173,http://127.0.0.1:5173").split(",")
         if orig.strip()
     ]
+
+    # Approval Authorization Modes:
+    # "manual" (default): Requires explicit human authorization via Workbench, CLI, or approval_token.
+    # "unattended": Explicit opt-in allowing autonomous AI clients to self-authorize changesets.
+    APPROVAL_MODE: str = os.getenv("APPROVAL_MODE", "manual").lower()
+    ALLOW_UNATTENDED_MCP_APPROVAL: bool = os.getenv("ALLOW_UNATTENDED_MCP_APPROVAL", "false").lower() in ("true", "1", "yes")
+
+    # Filesystem Containment Boundaries:
+    # Restricts file inspection, editing, and output generation to authorized document roots.
+    ALLOW_ARBITRARY_FILESYSTEM_ACCESS: bool = os.getenv("ALLOW_ARBITRARY_FILESYSTEM_ACCESS", "false").lower() in ("true", "1", "yes")
+    ALLOWED_DOCUMENT_ROOTS_CONFIG: str = os.getenv("ALLOWED_DOCUMENT_ROOTS", "")
+
+    def get_allowed_roots(self) -> List[Path]:
+        """Returns the canonical set of authorized directories for reading and writing documents."""
+        roots: List[Path] = [
+            self.WORKSPACE_DIR.resolve(),
+            self.STORAGE_DIR.resolve(),
+            Path.cwd().resolve(),
+            self.BASE_DIR.resolve(),
+        ]
+        sample_dir = (Path.cwd() / "sample_docs").resolve()
+        if sample_dir.exists():
+            roots.append(sample_dir)
+
+        if self.ALLOWED_DOCUMENT_ROOTS_CONFIG:
+            for entry in self.ALLOWED_DOCUMENT_ROOTS_CONFIG.split(","):
+                entry = entry.strip()
+                if entry:
+                    try:
+                        p = Path(entry).expanduser().resolve()
+                        roots.append(p)
+                    except Exception:
+                        pass
+        return list(dict.fromkeys(roots))
+
+    def is_path_allowed(self, path: Union[str, Path], operation: str = "read") -> bool:
+        """
+        Validates whether a candidate path falls strictly within authorized document roots.
+        Resolves symlinks completely before boundary checking to prevent directory escaping.
+        """
+        if self.ALLOW_ARBITRARY_FILESYSTEM_ACCESS:
+            return True
+
+        try:
+            target = Path(path).expanduser().resolve()
+        except Exception:
+            return False
+
+        allowed_roots = self.get_allowed_roots()
+        for root in allowed_roots:
+            try:
+                if target == root or target.is_relative_to(root):
+                    return True
+            except (ValueError, AttributeError):
+                pass
+
+        # For write destinations where the target file may not yet exist on disk,
+        # verify that the parent directory resides inside an allowed root.
+        if operation == "write":
+            for root in allowed_roots:
+                try:
+                    if target.parent == root or target.parent.is_relative_to(root):
+                        return True
+                except (ValueError, AttributeError):
+                    pass
+
+        return False
+
+    def assert_path_allowed(self, path: Union[str, Path], operation: str = "read") -> Path:
+        """
+        Asserts that the resolved path is within authorized boundaries, raising
+        AccessDeniedError if outside authorized document roots.
+        """
+        from injester.domain.auth import AccessDeniedError
+
+        target = Path(path).expanduser().resolve()
+        if not self.is_path_allowed(target, operation=operation):
+            roots_str = ", ".join(str(r) for r in self.get_allowed_roots())
+            raise AccessDeniedError(
+                f"Filesystem access violation: '{target}' lies outside authorized document roots: [{roots_str}]. "
+                f"Configure ALLOWED_DOCUMENT_ROOTS or set ALLOW_ARBITRARY_FILESYSTEM_ACCESS=true to expand boundaries."
+            )
+        return target
 
     def validate_security(self) -> None:
         """Enforces fail-fast startup checks in production and multi-user environments."""

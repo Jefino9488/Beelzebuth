@@ -6,18 +6,23 @@ Validates the full 3-stage document operation workflow:
 - Stage 2: Propose & Review (propose_text_edit, propose_section_reorder, propose_block_move, preview_changeset)
 - Stage 3: Approve, Apply & Verify (approve_changeset, apply_changeset, verify_document, get_change_report)
 
-Ensures that both the unified DocumentToolService and the MCP server tools share
-identical validation rules, tamper-proof cryptographic approval boundaries, and surgical OOXML AST surgery.
+Hardenings covered:
+- P0: MCP cannot self-approve without human authorization (approval_token or explicit APPROVAL_MODE=unattended).
+- P0: Filesystem boundaries prevent path traversal, arbitrary file inspection, and out-of-boundary writing.
+- P1: Standalone verification independently confirms structural integrity, package styles, operation correctness, and content preservation.
 """
 
 import os
+import shutil
+import zipfile
 import tempfile
 import pytest
 
+from injester.config import settings
 from injester.application.document_tools import DocumentToolService, document_tools
 from injester.infrastructure.docx_patcher import DocxPatchError
 from injester.semantic.change_engine import ChangeOperationType, TypedChangeCommand
-from injester.domain.auth import SecurityContext
+from injester.domain.auth import SecurityContext, AccessDeniedError
 from injester.domain.models import UserRole
 import injester.mcp.server as mcp_server
 
@@ -32,8 +37,10 @@ def sample_docx():
 
 @pytest.fixture
 def temp_output_docx():
-    """Yields a temporary path for output DOCX and guarantees cleanup."""
-    fd, path = tempfile.mkstemp(suffix=".docx")
+    """Yields a temporary path inside STORAGE_DIR / 'recompiled' and guarantees cleanup."""
+    out_dir = settings.STORAGE_DIR / "recompiled"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    fd, path = tempfile.mkstemp(suffix=".docx", dir=str(out_dir))
     os.close(fd)
     yield path
     if os.path.exists(path):
@@ -106,10 +113,12 @@ def test_document_tools_stage2_propose_and_review(sample_docx):
     assert prop["impact"]["is_valid"] is True
     assert "block-003" in prop["impact"]["affected_block_ids"]
 
-    # 2. Preview proposed changeset
+    # 2. Preview proposed changeset (including approval_token generation)
     preview = service.preview_changeset(cs_id)
     assert preview["changeset_id"] == cs_id
     assert preview["is_valid"] is True
+    assert preview["approval_token"] is not None
+    assert len(preview["approval_token"]) == 64
     assert preview["diff_summary"]["target_block_id"] == "block-003"
     assert preview["diff_summary"]["after"] == "Revised corporate workstation deployment guidelines."
     assert "corporate developer workstations" in preview["diff_summary"]["before"]
@@ -184,6 +193,10 @@ def test_document_tools_stage3_approval_and_verification(sample_docx, temp_outpu
         changeset_id=cs_id,
     )
     assert verification["is_verified"] is True
+    assert verification["operation_correctness"] is True
+    assert verification["structural_integrity"] is True
+    assert verification["content_preservation"] is True
+    assert verification["formatting_preservation"] is True
     assert verification["source_block_count"] == verification["recompiled_block_count"]
     assert len(verification["discrepancies"]) == 0
 
@@ -195,11 +208,15 @@ def test_document_tools_stage3_approval_and_verification(sample_docx, temp_outpu
 
 
 # ===========================================================================
-# MCP Server Tool Interface Tests
+# MCP Server Tool Interface & Authorization Tests
 # ===========================================================================
 
 def test_mcp_tools_complete_editing_flow(sample_docx, temp_output_docx):
-    """Verifies that MCP tools exposed to external AI clients execute the full 3-stage lifecycle."""
+    """Verifies that MCP tools exposed to external AI clients execute the full 3-stage lifecycle with human token approval."""
+    # Ensure manual mode is active
+    settings.ALLOW_UNATTENDED_MCP_APPROVAL = False
+    settings.APPROVAL_MODE = "manual"
+
     # Stage 1: MCP Discovery & Inspection
     doc_info = mcp_server.inspect_document(sample_docx)
     assert doc_info["document_type"] == "MANUAL"
@@ -229,9 +246,15 @@ def test_mcp_tools_complete_editing_flow(sample_docx, temp_output_docx):
     preview = mcp_server.preview_changeset(cs_id)
     assert preview["is_valid"] is True
     assert preview["diff_summary"]["after"] == new_instruction
+    human_token = preview["approval_token"]
+    assert human_token is not None
 
-    # Stage 3: MCP Approval & Recompilation
-    approval = mcp_server.approve_changeset(cs_id, rationale="Approved via MCP client.")
+    # Stage 3: MCP Approval with Human Token & Recompilation
+    approval = mcp_server.approve_changeset(
+        changeset_id=cs_id,
+        rationale="Approved with verified human token.",
+        approval_token=human_token,
+    )
     assert approval["status"] == "APPROVED"
     assert len(approval["approval_signature"]) == 64
 
@@ -246,16 +269,51 @@ def test_mcp_tools_complete_editing_flow(sample_docx, temp_output_docx):
         changeset_id=cs_id,
     )
     assert ver["is_verified"] is True
+    assert ver["operation_correctness"] is True
 
     # Audit report retrieval via MCP tool
     report = mcp_server.get_change_report(cs_id)
     assert report["changeset_id"] == cs_id
 
 
+def test_mcp_unattended_approval_rejected_in_manual_mode(sample_docx):
+    """P0 Security: In default manual mode, unattended self-approval by an AI client without token is rejected."""
+    settings.ALLOW_UNATTENDED_MCP_APPROVAL = False
+    settings.APPROVAL_MODE = "manual"
+
+    prop = mcp_server.propose_text_edit(
+        document_id_or_path=sample_docx,
+        block_id="block-003",
+        new_text="Self-approved mutation.",
+    )
+    cs_id = prop["changeset_id"]
+
+    # Calling approve_changeset without token fails closed
+    with pytest.raises(AccessDeniedError) as exc_info:
+        mcp_server.approve_changeset(cs_id, rationale="AI self-approval attempt")
+    assert "requires explicit human authorization" in str(exc_info.value)
+
+
+def test_mcp_unattended_approval_allowed_when_opted_in(sample_docx, temp_output_docx):
+    """P0 Security: When APPROVAL_MODE=unattended is explicitly configured, autonomous approval succeeds auditably."""
+    settings.ALLOW_UNATTENDED_MCP_APPROVAL = True
+    try:
+        prop = mcp_server.propose_text_edit(
+            document_id_or_path=sample_docx,
+            block_id="block-003",
+            new_text="Autonomous CI pipeline mutation.",
+        )
+        cs_id = prop["changeset_id"]
+
+        approval = mcp_server.approve_changeset(cs_id, rationale="Autonomous test run")
+        assert approval["status"] == "APPROVED"
+        assert approval["approved_by"] == "mcp:unattended_agent"
+    finally:
+        settings.ALLOW_UNATTENDED_MCP_APPROVAL = False
+
+
 def test_mcp_tools_section_reorder(sample_docx, temp_output_docx):
     """Verifies proposing, reviewing, approving, and applying section reordering via MCP."""
-    struct = mcp_server.get_document_structure(sample_docx)
-    # Target section 5 (block-016), anchor before section 3 (block-007)
     target_heading = "block-016"
     anchor_heading = "block-007"
 
@@ -273,8 +331,9 @@ def test_mcp_tools_section_reorder(sample_docx, temp_output_docx):
     assert prev["diff_summary"]["target_heading_block_id"] == target_heading
     assert prev["diff_summary"]["before_heading_block_id"] == anchor_heading
 
-    # Approve and apply
-    mcp_server.approve_changeset(cs_id, rationale="Approved section move.")
+    # Approve with human token and apply
+    token = prev["approval_token"]
+    mcp_server.approve_changeset(cs_id, rationale="Approved section move.", approval_token=token)
     applied = mcp_server.apply_changeset(cs_id, output_path=temp_output_docx)
     assert applied["is_successful"] is True
     assert applied["unmodified_blocks_intact"] is True
@@ -296,6 +355,139 @@ def test_mcp_unapproved_apply_rejected(sample_docx, temp_output_docx):
     with pytest.raises(DocxPatchError):
         mcp_server.apply_changeset(cs_id, output_path=temp_output_docx)
 
+
+# ===========================================================================
+# Filesystem Boundary & Access Denial Tests
+# ===========================================================================
+
+def test_filesystem_boundary_rejection(sample_docx):
+    """P0 Security: Filesystem boundaries prevent path traversal and unauthorized file access."""
+    service = DocumentToolService()
+
+    # 1. Attempting to inspect /etc/passwd or system files outside authorized roots must raise AccessDeniedError
+    with pytest.raises(AccessDeniedError) as exc_info:
+        service.inspect_document("/etc/passwd")
+    assert "Filesystem access violation" in str(exc_info.value)
+
+    # 2. Path traversal escaping the root must be rejected
+    with pytest.raises(AccessDeniedError):
+        service.inspect_document("../../../../../../../../../etc/shadow")
+
+    # 3. Output write destinations outside authorized roots must raise AccessDeniedError
+    prop = service.propose_text_edit(
+        sample_docx,
+        block_id="block-003",
+        new_text="Filesystem write boundary test",
+    )
+    cs_id = prop["changeset_id"]
+    token = service.preview_changeset(cs_id)["approval_token"]
+    service.approve_changeset(cs_id, approval_token=token)
+
+    forbidden_dest = "/tmp/forbidden_workspace_escape/malicious.docx"
+    with pytest.raises(AccessDeniedError) as exc_info:
+        service.apply_changeset(changeset_id=cs_id, output_path=forbidden_dest)
+    assert "Filesystem access violation" in str(exc_info.value)
+
+
+# ===========================================================================
+# Hardened Standalone Verification Tests
+# ===========================================================================
+
+def test_verification_contract_detects_deliberate_corruption(sample_docx, temp_output_docx):
+    """P1 Verification: Standalone verification detects corrupted untouched blocks, wrong edits, and style tampering."""
+    service = DocumentToolService()
+
+    # Create legitimate recompiled DOCX
+    prop = service.propose_text_edit(
+        sample_docx,
+        block_id="block-003",
+        new_text="Legitimate verified edit.",
+    )
+    cs_id = prop["changeset_id"]
+    token = service.preview_changeset(cs_id)["approval_token"]
+    service.approve_changeset(cs_id, approval_token=token)
+    service.apply_changeset(cs_id, output_path=temp_output_docx)
+
+    # Baseline verification passes
+    base_ver = service.verify_document(sample_docx, temp_output_docx, cs_id)
+    assert base_ver["is_verified"] is True
+    assert base_ver["content_preservation"] is True
+    assert base_ver["operation_correctness"] is True
+    assert base_ver["formatting_preservation"] is True
+
+    out_dir = settings.STORAGE_DIR / "recompiled"
+
+    # Test 1: Corrupted untouched block -> content_preservation must fail
+    corrupt_content_path = str(out_dir / "corrupted_content.docx")
+    try:
+        shutil.copyfile(temp_output_docx, corrupt_content_path)
+        with zipfile.ZipFile(corrupt_content_path, "r") as zin:
+            files = {n: zin.read(n) for n in zin.namelist()}
+
+        doc_xml = files["word/document.xml"].decode("utf-8")
+        corrupted_xml = doc_xml.replace("Pre-Boot Physical Workspace Setup", "Tampered Unexpected Content")
+        files["word/document.xml"] = corrupted_xml.encode("utf-8")
+
+        with zipfile.ZipFile(corrupt_content_path, "w") as zout:
+            for n, data in files.items():
+                zout.writestr(n, data)
+
+        v_content = service.verify_document(sample_docx, corrupt_content_path, cs_id)
+        assert v_content["is_verified"] is False
+        assert v_content["content_preservation"] is False
+        assert any("Content drift in untouched block" in d for d in v_content["discrepancies"])
+    finally:
+        if os.path.exists(corrupt_content_path):
+            os.remove(corrupt_content_path)
+
+    # Test 2: Target block text doesn't match expected -> operation_correctness must fail
+    corrupt_target_path = str(out_dir / "corrupted_target.docx")
+    try:
+        shutil.copyfile(temp_output_docx, corrupt_target_path)
+        with zipfile.ZipFile(corrupt_target_path, "r") as zin:
+            files = {n: zin.read(n) for n in zin.namelist()}
+
+        doc_xml = files["word/document.xml"].decode("utf-8")
+        corrupted_xml = doc_xml.replace("Legitimate verified edit.", "Completely Wrong Edit Text")
+        files["word/document.xml"] = corrupted_xml.encode("utf-8")
+
+        with zipfile.ZipFile(corrupt_target_path, "w") as zout:
+            for n, data in files.items():
+                zout.writestr(n, data)
+
+        v_target = service.verify_document(sample_docx, corrupt_target_path, cs_id)
+        assert v_target["is_verified"] is False
+        assert v_target["operation_correctness"] is False
+        assert any("Operation failure on block" in d for d in v_target["discrepancies"])
+    finally:
+        if os.path.exists(corrupt_target_path):
+            os.remove(corrupt_target_path)
+
+    # Test 3: Modified package styles -> formatting_preservation must fail
+    corrupt_style_path = str(out_dir / "corrupted_styles.docx")
+    try:
+        shutil.copyfile(temp_output_docx, corrupt_style_path)
+        with zipfile.ZipFile(corrupt_style_path, "r") as zin:
+            files = {n: zin.read(n) for n in zin.namelist()}
+
+        files["word/styles.xml"] = files["word/styles.xml"] + b"<!-- injected style tampering -->"
+
+        with zipfile.ZipFile(corrupt_style_path, "w") as zout:
+            for n, data in files.items():
+                zout.writestr(n, data)
+
+        v_style = service.verify_document(sample_docx, corrupt_style_path, cs_id)
+        assert v_style["is_verified"] is False
+        assert v_style["formatting_preservation"] is False
+        assert any("Package part 'word/styles.xml' was modified" in d for d in v_style["discrepancies"])
+    finally:
+        if os.path.exists(corrupt_style_path):
+            os.remove(corrupt_style_path)
+
+
+# ===========================================================================
+# Robust Error Handling Tests
+# ===========================================================================
 
 def test_invalid_document_or_block_error_handling(sample_docx):
     """Validates robust error handling for non-existent documents, blocks, and changesets."""
