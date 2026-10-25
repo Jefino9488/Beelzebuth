@@ -10,38 +10,10 @@ digital Markdown (.md) preserving:
 """
 
 import re
-from html.parser import HTMLParser
 from typing import List, Dict, Any, Tuple, Optional
+from bs4 import BeautifulSoup
 from injester.ingestion.schema import NormalizedElement, DocumentChunk
 from injester.synthesis.spans import SpanRegistry, SourceSpan
-
-
-class HTMLTableParser(HTMLParser):
-    """Parses HTML table markup into a 2D list of cell strings."""
-    def __init__(self):
-        super().__init__()
-        self.rows: List[List[str]] = []
-        self.cur_row: List[str] = []
-        self.cur_cell: List[str] = []
-        self.in_cell = False
-
-    def handle_starttag(self, tag, attrs):
-        if tag in ('td', 'th'):
-            self.in_cell = True
-            self.cur_cell = []
-
-    def handle_endtag(self, tag):
-        if tag in ('td', 'th'):
-            self.in_cell = False
-            self.cur_row.append(''.join(self.cur_cell).strip())
-        elif tag == 'tr':
-            if self.cur_row:
-                self.rows.append(self.cur_row)
-            self.cur_row = []
-
-    def handle_data(self, data):
-        if self.in_cell:
-            self.cur_cell.append(data)
 
 
 def format_rows_as_markdown_table(rows: List[List[str]]) -> str:
@@ -67,24 +39,48 @@ def format_rows_as_markdown_table(rows: List[List[str]]) -> str:
     return "\n".join(lines)
 
 
+def convert_html_table_to_gfm(html_content: str) -> Optional[str]:
+    """Parses HTML table markup using BeautifulSoup into a clean GFM table."""
+    try:
+        soup = BeautifulSoup(html_content, "html.parser")
+        table = soup.find("table")
+        if not table:
+            return None
+        rows: List[List[str]] = []
+        for tr in table.find_all("tr"):
+            cells = [
+                td.get_text(separator=" ", strip=True).replace("|", "\\|").replace("\n", " ")
+                for td in tr.find_all(["th", "td"])
+            ]
+            if cells:
+                rows.append(cells)
+        if rows and len(rows) >= 1:
+            return format_rows_as_markdown_table(rows)
+    except Exception:
+        pass
+    return None
+
+
 def convert_table_to_gfm(el: NormalizedElement) -> str:
     """
     Extracts and converts any table representation (HTML or plain text) into a GFM table.
+    Uses BeautifulSoup for robust parsing of layout HTML tables with merged cells and attributes.
     """
     # 1. Try HTML table from unstructured metadata
     extra = el.metadata.extra if el.metadata and hasattr(el.metadata, "extra") else {}
     html_table = extra.get("text_as_html") if isinstance(extra, dict) else None
     if html_table and "<table" in html_table:
-        try:
-            parser = HTMLTableParser()
-            parser.feed(html_table)
-            if parser.rows and len(parser.rows) >= 2:
-                return format_rows_as_markdown_table(parser.rows)
-        except Exception:
-            pass
+        gfm = convert_html_table_to_gfm(html_table)
+        if gfm:
+            return gfm
 
     # 2. Try parsing plain text table
     raw_text = el.text.strip()
+    if "<table" in raw_text:
+        gfm = convert_html_table_to_gfm(raw_text)
+        if gfm:
+            return gfm
+
     lines = [l.strip() for l in raw_text.split("\n") if l.strip()]
     if not lines:
         return raw_text
@@ -115,45 +111,6 @@ def convert_table_to_gfm(el: NormalizedElement) -> str:
 
     # Fallback to monospace code block
     return f"```text\n{raw_text}\n```"
-
-
-def detect_and_format_diagram(text: str) -> Optional[str]:
-    """
-    Detects if a text block contains a sequence, process flow, or ASCII diagram
-    and converts it into an inline Mermaid diagram.
-    """
-    lines = [l.strip() for l in text.split("\n") if l.strip()]
-    # Check for arrow connections (A -> B -> C)
-    if any("->" in l or "-->" in l for l in lines):
-        mermaid_steps = []
-        for l in lines:
-            parts = re.split(r"\s*-+>\s*", l)
-            if len(parts) >= 2:
-                for i in range(len(parts) - 1):
-                    src = re.sub(r"[^a-zA-Z0-9_ ]", "", parts[i]).strip()
-                    tgt = re.sub(r"[^a-zA-Z0-9_ ]", "", parts[i+1]).strip()
-                    if src and tgt:
-                        mermaid_steps.append(f'  "{src}" --> "{tgt}"')
-        if mermaid_steps:
-            return "```mermaid\ngraph TD\n" + "\n".join(mermaid_steps) + "\n```"
-
-    # Check for numbered procedural steps (e.g. 1. Ingest 2. Process 3. Verify)
-    step_items = []
-    for l in lines:
-        m = re.match(r"^(\d+[\.)]|Step\s+\d+:?)\s+(.+)", l, re.IGNORECASE)
-        if m:
-            step_items.append(m.group(2).strip())
-    if len(step_items) >= 3:
-        mermaid_steps = []
-        for i in range(len(step_items) - 1):
-            s1 = (step_items[i][:35] + "..") if len(step_items[i]) > 35 else step_items[i]
-            s2 = (step_items[i+1][:35] + "..") if len(step_items[i+1]) > 35 else step_items[i+1]
-            s1_clean = s1.replace('"', "'")
-            s2_clean = s2.replace('"', "'")
-            mermaid_steps.append(f'  N{i+1}["{s1_clean}"] --> N{i+2}["{s2_clean}"]')
-        return "```mermaid\ngraph TD\n" + "\n".join(mermaid_steps) + "\n```"
-
-    return None
 
 
 def reconstruct_digital_markdown(
@@ -250,15 +207,8 @@ def reconstruct_digital_markdown(
             annotated_lines.append(f"- {bullet_text}{span_badge}")
             clean_lines.append(f"- {bullet_text}")
 
-        # 5. Narrative Text, Paragraphs, and Process Diagrams
+        # 5. Narrative Text and Paragraphs
         else:
-            # Check if this text block describes a diagram or workflow
-            diagram_md = detect_and_format_diagram(text)
-            if diagram_md:
-                annotated_lines.append(f"\n{diagram_md}{span_badge}\n")
-                clean_lines.append(f"\n{diagram_md}\n")
-                continue
-
             # Split sentences to attach granular span citations if available
             sentences = re.split(r"(?<=[.?!])\s+", text)
             if len(sentences) > 1 and span_registry:

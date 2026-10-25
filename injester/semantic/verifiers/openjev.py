@@ -59,17 +59,30 @@ class OpenJevVerifier(System1Verifier):
 
         try:
             from transformers import AutoModelForSequenceClassification, AutoTokenizer
-            self.tokenizer = AutoTokenizer.from_pretrained(
-                self.model_id,
-                subfolder=self.subfolder,
-                local_files_only=False
-            )
-            self.model = AutoModelForSequenceClassification.from_pretrained(
-                self.model_id,
-                subfolder=self.subfolder,
-                local_files_only=False,
-                dtype=torch.bfloat16 if self.device == "cuda" else torch.float32
-            ).to(self.device)
+            try:
+                self.tokenizer = AutoTokenizer.from_pretrained(
+                    self.model_id,
+                    subfolder=self.subfolder,
+                    local_files_only=True
+                )
+                self.model = AutoModelForSequenceClassification.from_pretrained(
+                    self.model_id,
+                    subfolder=self.subfolder,
+                    local_files_only=True,
+                    dtype=torch.bfloat16 if self.device == "cuda" else torch.float32
+                ).to(self.device)
+            except Exception:
+                self.tokenizer = AutoTokenizer.from_pretrained(
+                    self.model_id,
+                    subfolder=self.subfolder,
+                    local_files_only=False
+                )
+                self.model = AutoModelForSequenceClassification.from_pretrained(
+                    self.model_id,
+                    subfolder=self.subfolder,
+                    local_files_only=False,
+                    dtype=torch.bfloat16 if self.device == "cuda" else torch.float32
+                ).to(self.device)
             self.model.eval()
         except Exception as e:
             if not is_testing:
