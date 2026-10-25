@@ -5,7 +5,7 @@ build-backend = "hatchling.build"
 [project]
 name = "injester"
 version = "0.1.0"
-description = "Beelzebuth (Injester Community) — Local document ingestion, digital markdown synthesis, and process graph engine"
+description = "Beelzebuth — Visual Document Intelligence & Transformation Engine"
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
@@ -27,6 +27,10 @@ dependencies = [
     "markdown>=3.6",
     "beautifulsoup4>=4.12",
     "docling>=2.140",
+    "python-docx>=1.1.0",
+    "openpyxl>=3.1.0",
+    "python-pptx>=1.0.0",
+    "networkx>=3.0",
     "python-multipart>=0.0.9",
 ]
 

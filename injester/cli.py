@@ -1,6 +1,6 @@
 """
-Beelzebuth & Injester Community Unified CLI.
-Devour any information into readable Markdown (.md) and depict them in diagrams.
+Beelzebuth — Visual Document Intelligence & Transformation Engine.
+Make documents editable through their meaning and structure, rather than only through their pages.
 """
 
 import sys
@@ -28,7 +28,7 @@ err_console = Console(stderr=True)
 
 app = typer.Typer(
     name="injester",
-    help="Beelzebuth: Devour any document into readable Markdown (.md) and depict them in diagrams.",
+    help="Beelzebuth: Visual Document Intelligence & Transformation Engine.",
     add_completion=False,
     no_args_is_help=True,
 )
@@ -458,7 +458,7 @@ def diagram_generate_cmd(
 @app.command("web")
 def web_cmd(
     port: int = typer.Option(8000, "--port", "-p", help="Port to bind the server to."),
-    host: str = typer.Option("127.0.0.1", "--host", "-h", help="Host address to bind to."),
+    host: str = typer.Option("127.0.0.1", "--host", "-H", help="Host address to bind to."),
     no_browser: bool = typer.Option(False, "--no-browser", help="Do not automatically open the browser."),
 ):
     """Start FastAPI, serve the React frontend at '/', and open the browser."""

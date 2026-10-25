@@ -13,12 +13,16 @@ import hashlib
 import asyncio
 import tempfile
 from pathlib import Path
-from typing import Optional, List, Dict, Any
+from typing import Optional, List, Dict, Any, Union
 from pydantic import BaseModel, Field
-from fastapi import APIRouter, UploadFile, File as FastAPIFile, Form, HTTPException, status
+from fastapi import APIRouter, UploadFile, File as FastAPIFile, Form, HTTPException, status, Depends
 from fastapi.responses import JSONResponse
 
 from injester.config import settings
+from injester.domain.auth import SecurityContext
+from injester.api.deps import get_current_sec_ctx
+from injester.application.docx_pipeline import DocxRoundTripPipeline, DocumentEditSession
+from injester.semantic.change_engine import TypedChangeCommand, ChangeSet
 from injester.ingestion.extractor import DocumentExtractor
 from injester.ingestion.chunker import HierarchicalChunker
 from injester.semantic.pipeline import GranularSpanRegistry, EvidenceFirstSemanticPipeline
@@ -69,7 +73,9 @@ def beelzebuth_health():
         "status": "operational",
         "system1_provider": getattr(verifier, "provider_name", "system1"),
         "primary_llm": getattr(settings, "MODEL_NAME", "default"),
-        "zero_hallucination_guarantee": True,
+        "verification_mode": "calibrated_nli",
+        "entailment_threshold": 0.85,
+        "zero_synthetic_drift_policy": True,
     }
 
 
@@ -418,3 +424,161 @@ async def devour_document(
     finally:
         if tmp_path.exists():
             tmp_path.unlink()
+
+
+# ---------------------------------------------------------------------------
+# Document Change Management & Cryptographic Approval API Endpoints
+# ---------------------------------------------------------------------------
+
+_active_sessions: Dict[str, DocumentEditSession] = {}
+_active_changesets: Dict[str, ChangeSet] = {}
+_pipeline = DocxRoundTripPipeline()
+
+
+class LoadDocumentRequest(BaseModel):
+    file_path: str
+
+
+class ProposeEditRequest(BaseModel):
+    session_id: str
+    command: TypedChangeCommand
+
+
+class ApproveChangeSetRequest(BaseModel):
+    session_id: str
+    changeset_id: str
+    rationale: Optional[str] = ""
+    claimed_approver_id: Optional[str] = None
+
+
+class RecompileRequest(BaseModel):
+    session_id: str
+    changeset_id: str
+    output_docx_path: str
+
+
+@router.post("/session/load")
+def load_document_session(req: LoadDocumentRequest):
+    """Loads a DOCX document into a canonical DocumentEditSession."""
+    if not os.path.exists(req.file_path):
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Document file not found at '{req.file_path}'",
+        )
+    try:
+        session = _pipeline.load_document(req.file_path)
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Failed to parse document: {str(e)}",
+        )
+    session_id = f"sess_{uuid.uuid4().hex[:12]}"
+    _active_sessions[session_id] = session
+    return {
+        "session_id": session_id,
+        "document_id": session.document_id,
+        "version_id": session.version_id,
+        "document_type": session.document_type.value,
+        "total_blocks": session.document_ir.total_blocks,
+        "step_count": len(session.steps),
+    }
+
+
+@router.post("/changeset/propose")
+def propose_document_changeset(req: ProposeEditRequest):
+    """Evaluates a TypedChangeCommand and returns a proposed ChangeSet with impact analysis."""
+    session = _active_sessions.get(req.session_id)
+    if not session:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Active editing session '{req.session_id}' not found.",
+        )
+    try:
+        changeset = _pipeline.propose_edit(session, req.command)
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Failed to evaluate change command: {str(e)}",
+        )
+    _active_changesets[changeset.changeset_id] = changeset
+    return changeset.model_dump()
+
+
+@router.post("/changeset/approve")
+def approve_document_changeset(
+    req: ApproveChangeSetRequest,
+    sec_ctx: SecurityContext = Depends(get_current_sec_ctx),
+):
+    """
+    Approves a proposed ChangeSet.
+    Security Boundary: The approver identity is derived strictly from the authenticated
+    security context (sec_ctx.user_id / sec_ctx.email). Any attempt to supply a different
+    approver identity in the request body is rejected with 403 Forbidden.
+    """
+    session = _active_sessions.get(req.session_id)
+    if not session:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Active editing session '{req.session_id}' not found.",
+        )
+    changeset = _active_changesets.get(req.changeset_id)
+    if not changeset:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"ChangeSet '{req.changeset_id}' not found.",
+        )
+
+    # Prevent caller from spoofing another user's identity
+    if req.claimed_approver_id and req.claimed_approver_id.strip() not in (sec_ctx.user_id, sec_ctx.email):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=(
+                f"Security violation: Authenticated principal '{sec_ctx.user_id}' cannot "
+                f"approve changes under another identity ('{req.claimed_approver_id}')."
+            ),
+        )
+
+    try:
+        approved_cs = _pipeline.approve_changeset(
+            session=session,
+            changeset=changeset,
+            approver=sec_ctx,
+            rationale=req.rationale or "",
+        )
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Approval rejected: {str(e)}",
+        )
+
+    _active_changesets[approved_cs.changeset_id] = approved_cs
+    return approved_cs.model_dump()
+
+
+@router.post("/changeset/recompile")
+def recompile_document_changeset(req: RecompileRequest):
+    """Recompiles an approved ChangeSet and verifies document integrity."""
+    session = _active_sessions.get(req.session_id)
+    if not session:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Active editing session '{req.session_id}' not found.",
+        )
+    changeset = _active_changesets.get(req.changeset_id)
+    if not changeset:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"ChangeSet '{req.changeset_id}' not found.",
+        )
+    try:
+        report = _pipeline.recompile_and_verify(
+            session=session,
+            changeset=changeset,
+            output_docx_path=req.output_docx_path,
+        )
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Recompilation aborted: {str(e)}",
+        )
+    return report.model_dump()

@@ -288,26 +288,32 @@ async def submit_process_graph_job(
         target_path.write_bytes(content)
         input_source = target_path
     else:
+        temp_dir = None
         input_source = file_id
 
     tenant_id = sec_ctx.organisation_id or "platform"
     server_output_dir = settings.STORAGE_DIR / "artifacts" / tenant_id / str(uuid.uuid4())
 
     def run_job():
-        with SessionLocal() as worker_session:
-            pipeline = InjesterPipeline(session=worker_session)
-            dual_result = pipeline.generate_process_graph(
-                sec_ctx=sec_ctx,
-                file_path_or_id=input_source,
-                output_dir=server_output_dir
-            )
-            return {
-                "process_name": dual_result.graph.process_name,
-                "activities_count": len(dual_result.graph.activities),
-                "gateways_count": len(dual_result.graph.gateways),
-                "defects_count": len(dual_result.defect_register.defects),
-                "artifacts_dir": str(server_output_dir),
-            }
+        try:
+            with SessionLocal() as worker_session:
+                pipeline = InjesterPipeline(session=worker_session)
+                dual_result = pipeline.generate_process_graph(
+                    sec_ctx=sec_ctx,
+                    file_path_or_id=input_source,
+                    output_dir=server_output_dir
+                )
+                return {
+                    "process_name": dual_result.graph.process_name,
+                    "activities_count": len(dual_result.graph.activities),
+                    "gateways_count": len(dual_result.graph.gateways),
+                    "defects_count": len(dual_result.defect_register.defects),
+                    "artifacts_dir": str(server_output_dir),
+                }
+        finally:
+            if temp_dir and os.path.exists(temp_dir):
+                import shutil
+                shutil.rmtree(temp_dir, ignore_errors=True)
 
     job = job_manager.submit_job(
         organisation_id=tenant_id,
