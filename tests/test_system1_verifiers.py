@@ -212,3 +212,47 @@ def test_laya_verdict_backwards_compatibility():
     )
     assert isinstance(verdict, LayaVerdict)
     assert isinstance(verdict, System1Verdict)
+
+
+def test_openjev_model_loading_failure_not_latched(monkeypatch):
+    """
+    Verifies that if OpenJevVerifier._ensure_model_loaded() fails on an initial attempt,
+    it does not latch _model_loaded = True. When the failure condition clears,
+    subsequent calls retry loading successfully.
+    """
+    from unittest.mock import MagicMock
+    from transformers import AutoModelForSequenceClassification, AutoTokenizer
+
+    openjev = OpenJevVerifier(load_model=True)
+    assert openjev._model_loaded is False
+    assert openjev.model is None
+    assert openjev.tokenizer is None
+
+    call_count = {"tokenizer": 0}
+
+    def flaky_tokenizer(*args, **kwargs):
+        call_count["tokenizer"] += 1
+        if call_count["tokenizer"] == 1:
+            raise OSError("Simulated transient file lock or loading failure")
+        return MagicMock()
+
+    mock_model = MagicMock()
+    mock_model.eval = MagicMock()
+    mock_model.to = MagicMock(return_value=mock_model)
+
+    monkeypatch.setattr(AutoTokenizer, "from_pretrained", flaky_tokenizer)
+    monkeypatch.setattr(AutoModelForSequenceClassification, "from_pretrained", lambda *args, **kwargs: mock_model)
+    monkeypatch.setenv("TESTING", "true")
+
+    # First attempt fails: model not loaded, latch must NOT be True
+    openjev._ensure_model_loaded()
+    assert openjev._model_loaded is False
+    assert openjev.model is None
+    assert openjev.tokenizer is None
+
+    # Second attempt succeeds: transient failure resolved, latch must now be True
+    openjev._ensure_model_loaded()
+    assert openjev._model_loaded is True
+    assert openjev.model is not None
+    assert openjev.tokenizer is not None
+

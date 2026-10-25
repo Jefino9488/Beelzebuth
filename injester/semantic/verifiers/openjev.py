@@ -37,22 +37,24 @@ class OpenJevVerifier(System1Verifier):
         device: Optional[str] = None,
         policy: Optional[System1ValidationPolicy] = None,
         load_model: bool = True,
+        allow_network_download: bool = False,
         **kwargs
     ):
         self.model_id = model_id
         self.subfolder = subfolder
         self.device = device or ("cuda" if torch.cuda.is_available() else "cpu")
         self.policy = policy or System1ValidationPolicy()
+        self.load_model = load_model
+        self.allow_network_download = allow_network_download
         self.model = None
         self.tokenizer = None
-        self._model_loaded = not load_model
+        self._model_loaded = False
 
 
     def _ensure_model_loaded(self):
         """Lazily load the NLI model on first use to avoid VRAM contention during LLM steps."""
-        if self._model_loaded:
+        if not self.load_model or self._model_loaded:
             return
-        self._model_loaded = True
         is_testing = os.getenv("TESTING", "false").lower() in ("true", "1")
         if self.device == "cuda" and torch.cuda.is_available():
             torch.cuda.empty_cache()
@@ -71,7 +73,17 @@ class OpenJevVerifier(System1Verifier):
                     local_files_only=True,
                     dtype=torch.bfloat16 if self.device == "cuda" else torch.float32
                 ).to(self.device)
-            except Exception:
+            except Exception as local_err:
+                if not self.allow_network_download:
+                    if is_testing:
+                        self.model = None
+                        self.tokenizer = None
+                        self._model_loaded = False
+                        return
+                    raise RuntimeError(
+                        f"OpenJev model '{self.model_id}' ({self.subfolder}) was not found in local cache "
+                        f"and allow_network_download is False (offline-by-default): {local_err}"
+                    )
                 self.tokenizer = AutoTokenizer.from_pretrained(
                     self.model_id,
                     subfolder=self.subfolder,
@@ -83,14 +95,19 @@ class OpenJevVerifier(System1Verifier):
                     local_files_only=False,
                     dtype=torch.bfloat16 if self.device == "cuda" else torch.float32
                 ).to(self.device)
-            self.model.eval()
+            if self.model is not None:
+                self.model.eval()
+                self._model_loaded = True
+            else:
+                self._model_loaded = False
         except Exception as e:
+            self.model = None
+            self.tokenizer = None
+            self._model_loaded = False
             if not is_testing:
                 raise RuntimeError(
                     f"Failed to load OpenJev model '{self.model_id}' ({self.subfolder}) on {self.device}: {e}"
                 )
-            self.model = None
-            self.tokenizer = None
 
     def unload_model(self):
         """Frees model and tokenizer from VRAM to avoid GPU contention with Ollama."""
