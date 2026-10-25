@@ -19,7 +19,7 @@ from fastapi import APIRouter, UploadFile, File as FastAPIFile, Form, HTTPExcept
 from fastapi.responses import JSONResponse
 
 from injester.config import settings
-from injester.domain.auth import SecurityContext
+from injester.domain.auth import SecurityContext, AccessDeniedError
 from injester.api.deps import get_current_sec_ctx
 from injester.application.docx_pipeline import DocxRoundTripPipeline, DocumentEditSession
 from injester.semantic.change_engine import TypedChangeCommand, ChangeSet
@@ -431,10 +431,6 @@ async def devour_document(
 # Document Change Management & Cryptographic Approval API Endpoints
 # ---------------------------------------------------------------------------
 
-_active_sessions = document_tools._sessions
-_active_changesets = document_tools._changesets
-_pipeline = document_tools.pipeline
-
 
 class LoadDocumentRequest(BaseModel):
     file_path: str
@@ -522,8 +518,9 @@ def propose_document_changeset(req: ProposeEditRequest):
 @router.post("/changeset/preview")
 def preview_document_changeset(req: PreviewChangeSetRequest):
     """Generates before/after diff summary and structural impact analysis (no approval token)."""
-    changeset = document_tools._changesets.get(req.changeset_id)
-    if not changeset:
+    try:
+        document_tools.get_changeset(req.changeset_id)
+    except KeyError:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"ChangeSet '{req.changeset_id}' not found.",
@@ -546,9 +543,11 @@ def issue_changeset_approval_token(
     """
     Explicitly issues an expiring, single-use human approval token for a ChangeSet.
     Requires an authenticated human security context (sec_ctx).
+    Uses cross-process persistence to resolve changesets created by MCP or CLI.
     """
-    changeset = document_tools._changesets.get(req.changeset_id)
-    if not changeset:
+    try:
+        document_tools.get_changeset(req.changeset_id)
+    except KeyError:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"ChangeSet '{req.changeset_id}' not found.",
@@ -583,16 +582,11 @@ def approve_document_changeset(
     Security Boundary: The approver identity is derived strictly from the authenticated
     security context (sec_ctx.user_id / sec_ctx.email). Any attempt to supply a different
     approver identity in the request body is rejected with 403 Forbidden.
-    Requires human approval token in manual mode.
+    Requires human approval token in manual mode. Resolves ChangeSets cross-process.
     """
-    session = document_tools._sessions.get(req.session_id)
-    if not session:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Active editing session '{req.session_id}' not found.",
-        )
-    changeset = document_tools._changesets.get(req.changeset_id)
-    if not changeset:
+    try:
+        cs = document_tools.get_changeset(req.changeset_id)
+    except KeyError:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"ChangeSet '{req.changeset_id}' not found.",
@@ -614,6 +608,12 @@ def approve_document_changeset(
             approver=sec_ctx,
             rationale=req.rationale or "",
             approval_token=req.approval_token,
+            sec_ctx=sec_ctx,
+        )
+    except AccessDeniedError as e:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=str(e),
         )
     except Exception as e:
         raise HTTPException(
@@ -627,14 +627,9 @@ def approve_document_changeset(
 @router.post("/changeset/recompile")
 def recompile_document_changeset(req: RecompileRequest):
     """Recompiles an approved ChangeSet and verifies document integrity."""
-    session = document_tools._sessions.get(req.session_id)
-    if not session:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Active editing session '{req.session_id}' not found.",
-        )
-    changeset = document_tools._changesets.get(req.changeset_id)
-    if not changeset:
+    try:
+        cs_dict = document_tools.get_changeset(req.changeset_id)
+    except KeyError:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"ChangeSet '{req.changeset_id}' not found.",
@@ -645,7 +640,7 @@ def recompile_document_changeset(req: RecompileRequest):
             output_path=req.output_docx_path,
         )
         # Also run 4-pillar verification to provide comprehensive verification breakdown
-        source_path = session.file_path if session else None
+        source_path = cs_dict.get("file_path")
         if source_path and os.path.exists(source_path) and os.path.exists(req.output_docx_path):
             try:
                 verification = document_tools.verify_document(
@@ -659,7 +654,7 @@ def recompile_document_changeset(req: RecompileRequest):
     except Exception as e:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Recompilation aborted: {str(e)}",
+            detail=f"Recompilation failed: {str(e)}",
         )
     return report
 

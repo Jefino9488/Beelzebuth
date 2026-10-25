@@ -17,6 +17,7 @@ import shutil
 import zipfile
 import tempfile
 import time
+from concurrent.futures import ThreadPoolExecutor
 import pytest
 
 from injester.config import settings
@@ -578,3 +579,182 @@ def test_sensitive_files_strictly_inaccessible():
 
     with pytest.raises(KeyError):
         service.apply_changeset("cs_invalid_99999")
+
+
+# ===========================================================================
+# Adversarial Security & Verification Rigor Tests
+# ===========================================================================
+
+def test_concurrent_token_reuse_atomic_rejection(sample_docx):
+    """P0 Security: High-concurrency race condition test. Exactly 1 consumer succeeds and all contenders fail closed."""
+    service = DocumentToolService()
+    prop = service.propose_text_edit(
+        sample_docx,
+        block_id="block-003",
+        new_text="Concurrent token consumption race test.",
+    )
+    cs_id = prop["changeset_id"]
+    token = service.issue_approval_token(cs_id, approver="alice", ttl_seconds=60)
+
+    successes = []
+    denials = []
+
+    def _attempt_approve(worker_id: int):
+        svc = DocumentToolService()
+        try:
+            res = svc.approve_changeset(cs_id, approval_token=token)
+            successes.append((worker_id, res))
+        except AccessDeniedError as e:
+            denials.append((worker_id, str(e)))
+
+    # Execute 10 concurrent approval attempts simultaneously across threads
+    with ThreadPoolExecutor(max_workers=10) as executor:
+        futures = [executor.submit(_attempt_approve, i) for i in range(10)]
+        for f in futures:
+            f.result()
+
+    # Exactly 1 consumer must succeed; all 9 contenders must be denied
+    assert len(successes) == 1, f"Expected exactly 1 success, got {len(successes)}"
+    assert len(denials) == 9, f"Expected 9 denials, got {len(denials)}"
+    assert successes[0][1]["status"] == "APPROVED"
+    assert any("already been consumed" in msg.lower() or "atomic contention" in msg.lower() for _, msg in denials)
+
+
+def test_cross_process_changeset_and_token_flow(sample_docx, temp_output_docx):
+    """P1 Reliability: ChangeSet created by one process/service instance is cleanly loaded, token-issued, approved and applied by another."""
+    # Service 1 simulates Process 1 (e.g. MCP subprocess)
+    proc1_svc = DocumentToolService()
+    prop = proc1_svc.propose_text_edit(
+        sample_docx,
+        block_id="block-003",
+        new_text="Cross-process verified transformation.",
+    )
+    cs_id = prop["changeset_id"]
+
+    # Service 2 simulates Process 2 (e.g. REST API / Visual Workbench) with completely independent in-memory state
+    proc2_svc = DocumentToolService()
+    assert cs_id not in proc2_svc._changesets, "Process 2 should not have Process 1 memory cache"
+
+    # Process 2 reads persisted ChangeSet from disk and previews it
+    preview = proc2_svc.preview_changeset(cs_id)
+    assert preview["changeset_id"] == cs_id
+    assert preview["diff_summary"]["after"] == "Cross-process verified transformation."
+    assert "approval_token" not in preview
+
+    # Process 2 issues single-use human token via SQLite store
+    human_token = proc2_svc.issue_approval_token(cs_id, approver="human_lead")
+    assert human_token.startswith("appr_")
+
+    # Service 3 simulates Process 3 (e.g. CLI or MCP applying the edit)
+    proc3_svc = DocumentToolService()
+    approved = proc3_svc.approve_changeset(cs_id, approval_token=human_token)
+    assert approved["status"] == "APPROVED"
+
+    report = proc3_svc.apply_changeset(cs_id, output_path=temp_output_docx)
+    assert report["is_successful"] is True
+
+    # Replay on any service instance must fail
+    with pytest.raises(AccessDeniedError):
+        proc1_svc.approve_changeset(cs_id, approval_token=human_token)
+
+
+def test_verification_fails_when_target_block_text_is_duplicated_elsewhere(sample_docx, temp_output_docx):
+    """P1 Verification: Verifier verifies specifically on target block ID, rejecting edits applied to wrong block."""
+    service = DocumentToolService()
+    prop = service.propose_text_edit(
+        sample_docx,
+        block_id="block-003",
+        new_text="Target Specific Unique Edit",
+    )
+    cs_id = prop["changeset_id"]
+    token = service.issue_approval_token(cs_id)
+    service.approve_changeset(cs_id, approval_token=token)
+    service.apply_changeset(cs_id, output_path=temp_output_docx)
+
+    # Tamper the recompiled file: move the target text from block-003 to another block, leaving block-003 unmodified
+    out_dir = settings.STORAGE_DIR / "recompiled"
+    tampered_docx = str(out_dir / "tampered_wrong_block.docx")
+    try:
+        shutil.copyfile(temp_output_docx, tampered_docx)
+        with zipfile.ZipFile(tampered_docx, "r") as zin:
+            files = {n: zin.read(n) for n in zin.namelist()}
+
+        doc_xml = files["word/document.xml"].decode("utf-8")
+        # Revert block-003 to original and inject target text into block-004 instead
+        doc_xml = doc_xml.replace("Target Specific Unique Edit", "Workstation Deployment Guide")
+        doc_xml = doc_xml.replace("Overview", "Target Specific Unique Edit")
+        files["word/document.xml"] = doc_xml.encode("utf-8")
+
+        with zipfile.ZipFile(tampered_docx, "w") as zout:
+            for n, data in files.items():
+                zout.writestr(n, data)
+
+        res = service.verify_document(sample_docx, tampered_docx, cs_id)
+        assert res["is_verified"] is False
+        assert res["operation_correctness"] is False
+        assert any("Operation failure on block 'block-003'" in d for d in res["discrepancies"])
+    finally:
+        if os.path.exists(tampered_docx):
+            os.remove(tampered_docx)
+
+
+def test_verification_detects_dropped_ooxml_package_parts(sample_docx, temp_output_docx):
+    """P1 Verification: Verifier checks package part presence; dropped styles or numbering fails verification."""
+    service = DocumentToolService()
+    prop = service.propose_text_edit(
+        sample_docx,
+        block_id="block-003",
+        new_text="Part drop detection test.",
+    )
+    cs_id = prop["changeset_id"]
+    token = service.issue_approval_token(cs_id)
+    service.approve_changeset(cs_id, approval_token=token)
+    service.apply_changeset(cs_id, output_path=temp_output_docx)
+
+    out_dir = settings.STORAGE_DIR / "recompiled"
+    corrupt_docx = str(out_dir / "dropped_numbering_part.docx")
+    try:
+        shutil.copyfile(temp_output_docx, corrupt_docx)
+        with zipfile.ZipFile(corrupt_docx, "r") as zin:
+            # Exclude word/numbering.xml
+            files = {n: zin.read(n) for n in zin.namelist() if n != "word/numbering.xml"}
+
+        with zipfile.ZipFile(corrupt_docx, "w") as zout:
+            for n, data in files.items():
+                zout.writestr(n, data)
+
+        res = service.verify_document(sample_docx, corrupt_docx, cs_id)
+        assert res["is_verified"] is False
+        assert res["formatting_preservation"] is False
+        assert any("Preserved package part 'word/numbering.xml' present in source was dropped" in d for d in res["discrepancies"])
+    finally:
+        if os.path.exists(corrupt_docx):
+            os.remove(corrupt_docx)
+
+
+def test_persistence_failure_fails_closed(sample_docx, monkeypatch):
+    """P0 Security: Persistence failures do not swallow exceptions and fail closed."""
+    service = DocumentToolService()
+    prop = service.propose_text_edit(
+        sample_docx,
+        block_id="block-003",
+        new_text="Persistence failure test.",
+    )
+    cs_id = prop["changeset_id"]
+
+    # Deliberately break SQLite connection in _connect_token_db to simulate disk failure / DB lock
+    from injester.application import document_tools as dt_mod
+    def _broken_db():
+        raise sqlite3.OperationalError("Simulated disk I/O failure or database lock")
+
+    monkeypatch.setattr(dt_mod, "_connect_token_db", _broken_db)
+
+    # Issue approval token must raise RuntimeError and NOT return an unpersisted token
+    with pytest.raises(RuntimeError) as exc_info:
+        service.issue_approval_token(cs_id)
+    assert "Transactional persistence failure" in str(exc_info.value)
+
+    # verify_and_consume must also raise RuntimeError and NOT silently approve
+    with pytest.raises(RuntimeError) as exc_info:
+        service.verify_and_consume_approval_token(cs_id, "appr_dummy_token_12345")
+    assert "Database error during token verification" in str(exc_info.value)

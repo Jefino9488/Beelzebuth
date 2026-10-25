@@ -998,7 +998,7 @@ def test_beelzebuth_api_full_preview_recompile_and_verify_lifecycle():
             "rationale": "Replay attempt",
             "approval_token": token,
         })
-        assert replay_res.status_code == 400
+        assert replay_res.status_code == 403
         assert "already been consumed" in replay_res.json()["detail"].lower()
 
         # 5. Recompile and inspect verification breakdown

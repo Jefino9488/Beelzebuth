@@ -21,6 +21,7 @@ import hmac
 import zipfile
 import uuid
 import hashlib
+import sqlite3
 from pathlib import Path
 from typing import List, Dict, Optional, Any, Tuple, Union
 from pydantic import BaseModel, Field
@@ -54,7 +55,7 @@ from injester.application.retrieval import RetrievalService
 
 class ApprovalTokenRecord(BaseModel):
     """Cryptographically random, single-use, time-expiring human approval token record."""
-    token: str
+    token_hash: str
     changeset_id: str
     document_id: str
     document_version: str
@@ -62,6 +63,38 @@ class ApprovalTokenRecord(BaseModel):
     created_at: float
     expires_at: float
     consumed: bool = False
+    consumed_at: Optional[float] = None
+    token: Optional[str] = None
+
+
+def _get_token_db_path() -> Path:
+    return settings.WORKSPACE_DIR / "injester.db"
+
+
+def _connect_token_db() -> sqlite3.Connection:
+    """Provides a transactional SQLite connection with WAL mode and schema initialization."""
+    db_path = _get_token_db_path()
+    db_path.parent.mkdir(parents=True, exist_ok=True)
+    conn = sqlite3.connect(str(db_path), timeout=30.0)
+    conn.execute("PRAGMA journal_mode=WAL;")
+    conn.execute("PRAGMA busy_timeout=5000;")
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS approval_tokens (
+            token_hash VARCHAR(64) PRIMARY KEY,
+            changeset_id VARCHAR(64) NOT NULL,
+            document_id VARCHAR(255) NOT NULL,
+            document_version VARCHAR(64) NOT NULL,
+            approver_id VARCHAR(255) NOT NULL,
+            created_at REAL NOT NULL,
+            expires_at REAL NOT NULL,
+            consumed INTEGER DEFAULT 0 NOT NULL,
+            consumed_at REAL
+        );
+    """)
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_approval_tokens_cs ON approval_tokens(changeset_id);")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_approval_tokens_exp ON approval_tokens(expires_at);")
+    conn.commit()
+    return conn
 
 
 class DocumentToolService:
@@ -76,65 +109,30 @@ class DocumentToolService:
         self._changesets: Dict[str, ChangeSet] = {}
         self._changeset_to_session: Dict[str, str] = {}
         self._verification_reports: Dict[str, RoundTripVerificationReport] = {}
-        self._approval_tokens: Dict[str, ApprovalTokenRecord] = {}
 
     def _save_changeset(self, cs: ChangeSet) -> None:
         """Persists ChangeSet in-memory and to disk for cross-process access (MCP, API, CLI)."""
         self._changesets[cs.changeset_id] = cs
         if cs.file_path:
             self._changeset_to_session[cs.changeset_id] = cs.file_path
-        try:
-            cs_dir = settings.STORAGE_DIR / "changesets"
-            cs_dir.mkdir(parents=True, exist_ok=True)
-            target = cs_dir / f"{cs.changeset_id}.json"
-            target.write_text(cs.model_dump_json(indent=2))
-        except Exception:
-            pass
+        cs_dir = settings.STORAGE_DIR / "changesets"
+        cs_dir.mkdir(parents=True, exist_ok=True)
+        target = cs_dir / f"{cs.changeset_id}.json"
+        target.write_text(cs.model_dump_json(indent=2))
 
     def _get_changeset(self, changeset_id: str) -> Optional[ChangeSet]:
         """Retrieves ChangeSet from memory cache or persisted disk storage."""
         cs = self._changesets.get(changeset_id)
         if cs:
             return cs
-        try:
-            cs_dir = settings.STORAGE_DIR / "changesets"
-            target = cs_dir / f"{changeset_id}.json"
-            if target.exists():
-                cs = ChangeSet.model_validate_json(target.read_text())
-                self._changesets[changeset_id] = cs
-                if cs.file_path:
-                    self._changeset_to_session[changeset_id] = cs.file_path
-                return cs
-        except Exception:
-            pass
-        return None
-
-    def _save_approval_token(self, record: ApprovalTokenRecord) -> None:
-        """Persists single-use ApprovalTokenRecord in-memory and to disk."""
-        self._approval_tokens[record.token] = record
-        try:
-            tok_dir = settings.STORAGE_DIR / "approval_tokens"
-            tok_dir.mkdir(parents=True, exist_ok=True)
-            target = tok_dir / f"{record.token}.json"
-            target.write_text(record.model_dump_json(indent=2))
-        except Exception:
-            pass
-
-    def _get_approval_token(self, token: str) -> Optional[ApprovalTokenRecord]:
-        """Retrieves single-use ApprovalTokenRecord from memory cache or persisted disk storage."""
-        token_clean = token.strip() if token else ""
-        rec = self._approval_tokens.get(token_clean)
-        if rec:
-            return rec
-        try:
-            tok_dir = settings.STORAGE_DIR / "approval_tokens"
-            target = tok_dir / f"{token_clean}.json"
-            if target.exists():
-                rec = ApprovalTokenRecord.model_validate_json(target.read_text())
-                self._approval_tokens[token_clean] = rec
-                return rec
-        except Exception:
-            pass
+        cs_dir = settings.STORAGE_DIR / "changesets"
+        target = cs_dir / f"{changeset_id}.json"
+        if target.exists():
+            cs = ChangeSet.model_validate_json(target.read_text())
+            self._changesets[changeset_id] = cs
+            if cs.file_path:
+                self._changeset_to_session[changeset_id] = cs.file_path
+            return cs
         return None
 
     # ------------------------------------------------------------------
@@ -570,6 +568,7 @@ class DocumentToolService:
         Issues a cryptographically random, time-bounded (15m default), single-use approval token.
         Can only be invoked by an authorized human operator via the Visual Workbench or CLI.
         Bound to the specific ChangeSet ID, active document version, and approving human identity.
+        Persisted transactionally to SQLite with SHA-256 token hash (never plain credentials).
         """
         cs = self._get_changeset(changeset_id)
         if not cs:
@@ -581,18 +580,25 @@ class DocumentToolService:
             else str(approver)
         )
         token = f"appr_{secrets.token_urlsafe(32)}"
+        token_hash = hashlib.sha256(token.encode("utf-8")).hexdigest()
         now = time.time()
-        record = ApprovalTokenRecord(
-            token=token,
-            changeset_id=cs.changeset_id,
-            document_id=cs.document_id,
-            document_version=cs.document_version,
-            approver_id=approver_id,
-            created_at=now,
-            expires_at=now + ttl_seconds,
-            consumed=False,
-        )
-        self._save_approval_token(record)
+        expires_at = now + ttl_seconds
+
+        try:
+            with _connect_token_db() as conn:
+                conn.execute(
+                    """
+                    INSERT INTO approval_tokens (
+                        token_hash, changeset_id, document_id, document_version,
+                        approver_id, created_at, expires_at, consumed, consumed_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, 0, NULL)
+                    """,
+                    (token_hash, cs.changeset_id, cs.document_id, cs.document_version, approver_id, now, expires_at),
+                )
+                conn.commit()
+        except Exception as e:
+            raise RuntimeError(f"Transactional persistence failure while issuing approval token: {e}") from e
+
         return token
 
     def generate_approval_token(self, changeset_id: str) -> str:
@@ -607,53 +613,118 @@ class DocumentToolService:
         """
         Validates the approval token against the changeset and atomically marks it consumed.
         Rejects invalid, expired, mismatched, or already-consumed tokens with AccessDeniedError.
+        Enforces atomic compare-and-set via conditional SQL UPDATE:
+        UPDATE approval_tokens SET consumed = 1, consumed_at = ?
+        WHERE token_hash = ? AND changeset_id = ? AND consumed = 0 AND expires_at > ?
+        Accepts the token only if cursor.rowcount == 1.
         """
         token_clean = token.strip() if token else ""
-        record = self._get_approval_token(token_clean)
-        if not record:
+        if not token_clean:
             raise AccessDeniedError(
-                f"Approval authorization failed: Invalid approval_token for ChangeSet '{changeset_id}'."
+                f"Approval authorization failed: Missing approval_token for ChangeSet '{changeset_id}'."
             )
 
-        if record.changeset_id != changeset_id:
-            raise AccessDeniedError(
-                f"Approval authorization failed: Token was issued for ChangeSet '{record.changeset_id}', not '{changeset_id}'."
-            )
+        token_hash = hashlib.sha256(token_clean.encode("utf-8")).hexdigest()
 
-        cs = self._get_changeset(changeset_id)
-        if cs and record.document_version != cs.document_version:
-            raise AccessDeniedError(
-                "Approval authorization failed: Document version changed since token was issued."
-            )
+        try:
+            with _connect_token_db() as conn:
+                cursor = conn.cursor()
+                cursor.execute(
+                    """
+                    SELECT token_hash, changeset_id, document_id, document_version,
+                           approver_id, created_at, expires_at, consumed, consumed_at
+                    FROM approval_tokens
+                    WHERE token_hash = ?
+                    """,
+                    (token_hash,)
+                )
+                row = cursor.fetchone()
+                if not row:
+                    raise AccessDeniedError(
+                        f"Approval authorization failed: Invalid approval_token for ChangeSet '{changeset_id}'."
+                    )
 
-        if time.time() > record.expires_at:
-            raise AccessDeniedError(
-                f"Approval authorization failed: Approval token has expired (TTL {int(record.expires_at - record.created_at)}s elapsed)."
-            )
+                th, cs_id, doc_id, doc_ver, approver_id, created_at, expires_at, consumed, consumed_at = row
 
-        if record.consumed:
-            raise AccessDeniedError(
-                "Approval authorization failed: Approval token has already been consumed (single-use replay detected)."
-            )
+                if cs_id != changeset_id:
+                    raise AccessDeniedError(
+                        f"Approval authorization failed: Token was issued for ChangeSet '{cs_id}', not '{changeset_id}'."
+                    )
 
-        # Atomically mark consumed to prevent reuse
-        record.consumed = True
-        self._save_approval_token(record)
-        return record
+                cs = self._get_changeset(changeset_id)
+                if cs and doc_ver != cs.document_version:
+                    raise AccessDeniedError(
+                        "Approval authorization failed: Document version changed since token was issued."
+                    )
+
+                now = time.time()
+                if now > expires_at:
+                    raise AccessDeniedError(
+                        f"Approval authorization failed: Approval token has expired (TTL {int(expires_at - created_at)}s elapsed)."
+                    )
+
+                if consumed:
+                    raise AccessDeniedError(
+                        "Approval authorization failed: Approval token has already been consumed (single-use replay detected)."
+                    )
+
+                # Atomic compare-and-set conditional update
+                cursor.execute(
+                    """
+                    UPDATE approval_tokens
+                    SET consumed = 1, consumed_at = ?
+                    WHERE token_hash = ?
+                      AND changeset_id = ?
+                      AND consumed = 0
+                      AND expires_at > ?
+                    """,
+                    (now, token_hash, changeset_id, now)
+                )
+                if cursor.rowcount != 1:
+                    raise AccessDeniedError(
+                        "Approval authorization failed: Approval token has already been consumed or expired (atomic single-use contention)."
+                    )
+                conn.commit()
+
+                return ApprovalTokenRecord(
+                    token_hash=th,
+                    changeset_id=cs_id,
+                    document_id=doc_id,
+                    document_version=doc_ver,
+                    approver_id=approver_id,
+                    created_at=created_at,
+                    expires_at=expires_at,
+                    consumed=True,
+                    consumed_at=now,
+                    token=token_clean,
+                )
+        except AccessDeniedError:
+            raise
+        except Exception as e:
+            raise RuntimeError(f"Database error during token verification and consumption: {e}") from e
 
     def verify_approval_token(self, changeset_id: str, token: str) -> bool:
         """Read-only check if an approval token is valid without consuming it."""
         token_clean = token.strip() if token else ""
-        record = self._get_approval_token(token_clean)
-        if not record:
+        if not token_clean:
             return False
-        if record.changeset_id != changeset_id:
+        token_hash = hashlib.sha256(token_clean.encode("utf-8")).hexdigest()
+        try:
+            with _connect_token_db() as conn:
+                cursor = conn.cursor()
+                cursor.execute(
+                    "SELECT changeset_id, expires_at, consumed FROM approval_tokens WHERE token_hash = ?",
+                    (token_hash,)
+                )
+                row = cursor.fetchone()
+                if not row:
+                    return False
+                cs_id, expires_at, consumed = row
+                if cs_id != changeset_id or time.time() > expires_at or consumed:
+                    return False
+                return True
+        except Exception:
             return False
-        if time.time() > record.expires_at:
-            return False
-        if record.consumed:
-            return False
-        return True
 
     def preview_changeset(
         self,
@@ -872,15 +943,39 @@ class DocumentToolService:
                 zipfile.ZipFile(io.BytesIO(src_bytes), "r") as z_src,
                 zipfile.ZipFile(io.BytesIO(recomp_bytes), "r") as z_dst,
             ):
-                check_parts = [
+                src_names = set(z_src.namelist())
+                dst_names = set(z_dst.namelist())
+
+                # 1. Essential structural package parts required in any valid OOXML Word document
+                required_parts = [
+                    "[Content_Types].xml",
+                    "_rels/.rels",
+                    "word/document.xml",
+                    "word/_rels/document.xml.rels",
+                ]
+                for part in required_parts:
+                    if part in src_names and part not in dst_names:
+                        formatting_preservation = False
+                        discrepancies.append(f"Required package part '{part}' missing from recompiled document.")
+                    elif part in src_names and part in dst_names and part != "word/document.xml":
+                        if z_src.read(part) != z_dst.read(part):
+                            formatting_preservation = False
+                            discrepancies.append(f"Package part '{part}' was modified (expected byte-identical).")
+
+                # 2. Invariant style, font, numbering, and settings parts
+                preserved_parts = [
                     "word/styles.xml",
                     "word/numbering.xml",
                     "word/settings.xml",
                     "word/fontTable.xml",
+                    "word/webSettings.xml",
                 ]
-                for part in check_parts:
-                    if part in z_src.namelist() and part in z_dst.namelist():
-                        if z_src.read(part) != z_dst.read(part):
+                for part in preserved_parts:
+                    if part in src_names:
+                        if part not in dst_names:
+                            formatting_preservation = False
+                            discrepancies.append(f"Preserved package part '{part}' present in source was dropped in recompiled document.")
+                        elif z_src.read(part) != z_dst.read(part):
                             formatting_preservation = False
                             discrepancies.append(f"Package part '{part}' was modified (expected byte-identical).")
         except Exception as e:
@@ -904,7 +999,7 @@ class DocumentToolService:
                 affected_bids.add(target_bid)
             if cs.command.target_step_id:
                 # Resolve step to block if session available
-                doc_id = self._changeset_to_session.get(changeset_id, cs.document_id)
+                doc_id = self._changeset_to_session.get(changeset_id, cs.file_path or cs.document_id)
                 sess = self._sessions.get(doc_id)
                 if sess and cs.command.target_step_id in sess.step_to_block_map:
                     affected_bids.add(sess.step_to_block_map[cs.command.target_step_id])
@@ -922,20 +1017,23 @@ class DocumentToolService:
             if op == ChangeOperationType.EDIT_PARAGRAPH_TEXT:
                 t_bid = cs.command.target_block_id
                 expected_text = ((cs.command.new_values or {}).get("new_text") or "").strip()
-                # Target text must exist in recompiled blocks
-                matching_recomp = [
-                    rb for rb in recomp_blocks.values()
-                    if rb.text_content.strip() == expected_text
-                ]
-                if not matching_recomp:
+                # Target text must exist specifically in the target block ID
+                recomp_target = recomp_blocks.get(t_bid)
+                if not recomp_target:
                     operation_correctness = False
                     discrepancies.append(
-                        f"Operation failure on block '{t_bid}': expected edit text '{expected_text}' not found in recompiled document."
+                        f"Operation failure: target block '{t_bid}' not found in recompiled document."
+                    )
+                elif recomp_target.text_content.strip() != expected_text:
+                    operation_correctness = False
+                    discrepancies.append(
+                        f"Operation failure on block '{t_bid}': expected edit text '{expected_text}', "
+                        f"got '{recomp_target.text_content.strip()}'."
                     )
             elif op == ChangeOperationType.MOVE_PROCEDURE_STEP:
                 # Check that procedural list items survived in proper sequence
                 if cs.after_step_order:
-                    doc_id = self._changeset_to_session.get(changeset_id, cs.document_id)
+                    doc_id = self._changeset_to_session.get(changeset_id, cs.file_path or cs.document_id)
                     sess = self._sessions.get(doc_id)
                     if sess:
                         recomp_step_order = []
@@ -975,43 +1073,101 @@ class DocumentToolService:
                             )
 
         # Pillar 4: Content & Formatting Preservation of Untouched Blocks
-        # Uses occurrence-tracking pool with one-to-one matching to preserve durability
-        # across structural reorderings and block index shifts.
-        reopened_pool: Dict[str, List[DocumentBlock]] = {}
-        for rb in recomp_blocks.values():
-            key = rb.text_content.strip()
-            reopened_pool.setdefault(key, []).append(rb)
+        is_structural_reorder = cs and cs.command.operation in (
+            ChangeOperationType.MOVE_PROCEDURE_STEP,
+            ChangeOperationType.REORDER_SECTION,
+        )
 
         matched_reopened_ids: Set[str] = set()
         unmodified_checked = 0
 
-        for bid, orig_b in orig_blocks.items():
-            if bid in affected_bids:
-                continue
+        if not is_structural_reorder:
+            for bid, orig_b in orig_blocks.items():
+                if bid in affected_bids:
+                    continue
+                match = recomp_blocks.get(bid)
+                if match is None:
+                    content_preservation = False
+                    discrepancies.append(f"Untouched block '{bid}' missing in recompiled document.")
+                    continue
 
-            key = orig_b.text_content.strip()
-            candidates = reopened_pool.get(key, [])
-            match = next((c for c in candidates if c.block_id not in matched_reopened_ids), None)
-
-            if match is None:
-                content_preservation = False
-                discrepancies.append(
-                    f"Content drift in untouched block '{bid}': "
-                    f"source content '{orig_b.text_content[:40]}…' missing or modified in recompiled document."
-                )
-            else:
-                matched_reopened_ids.add(match.block_id)
                 unmodified_checked += 1
 
-                # Verify formatting preservation on the matched block
+                # 1. Byte-level paragraph XML signature equality
+                if orig_b.location.xml_signature_hash != match.location.xml_signature_hash:
+                    formatting_preservation = False
+                    discrepancies.append(
+                        f"XML structure drift in untouched block '{bid}': paragraph XML signature altered."
+                    )
+
+                # 2. Textual content equality
+                if orig_b.text_content.strip() != match.text_content.strip():
+                    content_preservation = False
+                    discrepancies.append(
+                        f"Content drift in untouched block '{bid}': source='{orig_b.text_content[:40]}…', "
+                        f"recompiled='{match.text_content[:40]}…'."
+                    )
+
+                # 3. Formatting attributes equality
                 if (
                     orig_b.formatting.is_bold != match.formatting.is_bold
                     or orig_b.formatting.is_italic != match.formatting.is_italic
                     or orig_b.formatting.heading_level != match.formatting.heading_level
+                    or orig_b.formatting.style_id != match.formatting.style_id
+                    or orig_b.formatting.num_id != match.formatting.num_id
                     or orig_b.block_type != match.block_type
                 ):
                     formatting_preservation = False
-                    discrepancies.append(f"Formatting drift in untouched block '{bid}': style/type attributes altered.")
+                    discrepancies.append(f"Formatting attribute drift in untouched block '{bid}': style/type attributes altered.")
+
+                # 4. Table 2D matrix equality
+                if orig_b.block_type == "TABLE" and orig_b.table_data != match.table_data:
+                    content_preservation = False
+                    discrepancies.append(f"Table matrix content drift in untouched table '{bid}'.")
+        else:
+            # Occurrence-tracking pool with exact XML signature matching first, then text content matching
+            xml_pool: Dict[str, List[DocumentBlock]] = {}
+            text_pool: Dict[str, List[DocumentBlock]] = {}
+            for rb in recomp_blocks.values():
+                if rb.location and rb.location.xml_signature_hash:
+                    xml_pool.setdefault(rb.location.xml_signature_hash, []).append(rb)
+                text_pool.setdefault(rb.text_content.strip(), []).append(rb)
+
+            for bid, orig_b in orig_blocks.items():
+                if bid in affected_bids:
+                    continue
+
+                xml_hash = orig_b.location.xml_signature_hash if orig_b.location else None
+                match = None
+                if xml_hash and xml_hash in xml_pool:
+                    match = next((c for c in xml_pool[xml_hash] if c.block_id not in matched_reopened_ids), None)
+
+                if match is None:
+                    txt_key = orig_b.text_content.strip()
+                    match = next((c for c in text_pool.get(txt_key, []) if c.block_id not in matched_reopened_ids), None)
+
+                if match is None:
+                    content_preservation = False
+                    discrepancies.append(
+                        f"Content drift in untouched block '{bid}': source='{orig_b.text_content[:40]}…' "
+                        f"missing or modified in recompiled document."
+                    )
+                else:
+                    matched_reopened_ids.add(match.block_id)
+                    unmodified_checked += 1
+
+                    if (
+                        orig_b.formatting.is_bold != match.formatting.is_bold
+                        or orig_b.formatting.is_italic != match.formatting.is_italic
+                        or orig_b.formatting.heading_level != match.formatting.heading_level
+                        or orig_b.block_type != match.block_type
+                    ):
+                        formatting_preservation = False
+                        discrepancies.append(f"Formatting drift in untouched block '{bid}': style/type attributes altered.")
+
+                    if orig_b.block_type == "TABLE" and orig_b.table_data != match.table_data:
+                        content_preservation = False
+                        discrepancies.append(f"Table matrix content drift in untouched table '{bid}'.")
 
         is_verified = (
             operation_correctness
@@ -1029,7 +1185,7 @@ class DocumentToolService:
             "pillars": {
                 "operation_correctness": {
                     "verified": operation_correctness,
-                    "scope": "Target block mutated to match requested change command payload",
+                    "scope": "Target block mutated specifically at target block ID to match expected change payload",
                 },
                 "structural_integrity": {
                     "verified": structural_integrity,
@@ -1037,11 +1193,11 @@ class DocumentToolService:
                 },
                 "content_preservation": {
                     "verified": content_preservation,
-                    "scope": "100% of unaffected blocks identical with zero textual drift",
+                    "scope": "100% of unaffected blocks identical with zero textual or table drift",
                 },
                 "formatting_preservation": {
                     "verified": formatting_preservation,
-                    "scope": "OOXML styles.xml, numbering.xml, and run formatting unaltered",
+                    "scope": "Required & preserved OOXML parts (styles.xml, numbering.xml, settings.xml, rels) present and byte-identical; paragraph XML structure preserved",
                 },
             },
             "unverified_scope": [

@@ -8,6 +8,7 @@ from sqlalchemy import (
     Boolean,
     DateTime,
     Integer,
+    Float,
     ForeignKey,
     Enum as SQLEnum,
     Text,
@@ -208,3 +209,25 @@ class GenerationRun(Base):
 
     def __repr__(self) -> str:
         return f"<GenerationRun(id={self.id}, type={self.run_type}, org={self.organisation_id}, freshness={self.freshness_key[:8]})>"
+
+
+class ApprovalTokenModel(Base):
+    """
+    Transactional, single-use, time-expiring human approval token record.
+    Stores a SHA-256 hash of the bearer token rather than raw credentials.
+    Enforces atomic compare-and-set consumption across concurrent processes.
+    """
+    __tablename__ = "approval_tokens"
+
+    token_hash = Column(String(64), primary_key=True)
+    changeset_id = Column(String(64), nullable=False, index=True)
+    document_id = Column(String(255), nullable=False)
+    document_version = Column(String(64), nullable=False)
+    approver_id = Column(String(255), nullable=False)
+    created_at = Column(Float, nullable=False)
+    expires_at = Column(Float, nullable=False, index=True)
+    consumed = Column(Integer, default=0, nullable=False)
+    consumed_at = Column(Float, nullable=True)
+
+    def __repr__(self) -> str:
+        return f"<ApprovalToken(hash={self.token_hash[:8]}..., cs={self.changeset_id}, consumed={self.consumed})>"
