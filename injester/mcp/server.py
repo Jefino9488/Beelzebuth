@@ -430,3 +430,7 @@ def run_stdio_server():
     logger.info("Initializing Beelzebuth / Injester stdio MCP server...")
     manager.ensure_initialized()
     mcp_app.run(transport="stdio")
+
+
+if __name__ == "__main__":
+    run_stdio_server()
