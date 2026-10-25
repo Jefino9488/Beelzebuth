@@ -235,6 +235,7 @@ def config_cmd(
 def ingest_cmd(
     path: Path = typer.Argument(..., help="Path to document file (.pdf, .docx, .txt, .md, .pptx)."),
     output: Optional[Path] = typer.Option(None, "--output", "-o", help="Optional output path to write digitized Markdown (.md)."),
+    backend: str = typer.Option("auto", "--backend", "-b", help="Extraction backend ('auto', 'docling', 'unstructured')."),
 ):
     """Ingest and devour a document directly into the local workspace."""
     manager.ensure_initialized()
@@ -242,10 +243,10 @@ def ingest_cmd(
         console.print(f"[bold red]Error:[/bold red] File not found: {path}")
         raise typer.Exit(code=1)
 
-    console.print(f"[cyan]Devouring & indexing [bold]{path.name}[/bold]...[/cyan]")
+    console.print(f"[cyan]Devouring & indexing [bold]{path.name}[/bold] using backend '{backend}'...[/cyan]")
     try:
         service = DocumentService()
-        result = service.ingest(path)
+        result = service.ingest(path, backend=backend)
 
         md_saved_msg = ""
         if output:
@@ -254,7 +255,7 @@ def ingest_cmd(
             from injester.ingestion.chunker import HierarchicalChunker
             from injester.semantic.pipeline import GranularSpanRegistry
             doc_ext = DocumentExtractor()
-            elements = doc_ext.extract(path, document_id=result.doc_id, filename=path.name, file_version_id="v1")
+            elements = doc_ext.extract(path, document_id=result.doc_id, filename=path.name, file_version_id="v1", backend=backend)
             chunks = HierarchicalChunker().chunk_elements(elements)
             reg = GranularSpanRegistry.from_chunks(chunks)
             annotated_md, _, _ = reconstruct_digital_markdown(elements, reg, document_title=path.stem)
@@ -334,6 +335,7 @@ def digest_generate_cmd(
     file: Optional[Path] = typer.Option(None, "--file", "-f", help="Source document file to devour directly into Markdown (.md)."),
     output: Optional[Path] = typer.Option(None, "--output", "-o", help="Output Markdown file path (.md)."),
     doc_id: Optional[List[str]] = typer.Option(None, "--doc-id", "-d", help="Specific document ID(s) to constrain synthesis."),
+    backend: str = typer.Option("auto", "--backend", "-b", help="Extraction backend ('auto', 'docling', 'unstructured')."),
 ):
     """Devour information and synthesize a readable, citation-audited Markdown document (.md)."""
     manager.ensure_initialized()
@@ -342,14 +344,14 @@ def digest_generate_cmd(
         if not file.exists():
             console.print(f"[bold red]Error:[/bold red] File not found: {file}")
             raise typer.Exit(code=1)
-        console.print(f"[cyan]Devouring [bold]{file.name}[/bold] into high-fidelity Markdown...[/cyan]")
+        console.print(f"[cyan]Devouring [bold]{file.name}[/bold] into high-fidelity Markdown using backend '{backend}'...[/cyan]")
         try:
             from injester.application.digitizer import reconstruct_digital_markdown
             from injester.ingestion.extractor import DocumentExtractor
             from injester.ingestion.chunker import HierarchicalChunker
             from injester.semantic.pipeline import GranularSpanRegistry
             doc_ext = DocumentExtractor()
-            elements = doc_ext.extract(file, document_id=file.stem, filename=file.name, file_version_id="v1")
+            elements = doc_ext.extract(file, document_id=file.stem, filename=file.name, file_version_id="v1", backend=backend)
             chunks = HierarchicalChunker().chunk_elements(elements)
             reg = GranularSpanRegistry.from_chunks(chunks)
             annotated_md, _, _ = reconstruct_digital_markdown(elements, reg, document_title=file.stem)

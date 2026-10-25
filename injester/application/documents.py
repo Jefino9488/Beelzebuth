@@ -25,8 +25,13 @@ class DocumentService:
     def __init__(self):
         self.mgr = manager
 
-    def ingest(self, file_path: str | Path, filename: Optional[str] = None) -> IngestResult:
-        """Ingests a document directly into the local workspace."""
+    def ingest(
+        self,
+        file_path: str | Path,
+        filename: Optional[str] = None,
+        backend: Optional[str] = None,
+    ) -> IngestResult:
+        """Ingests a document directly into the local workspace using Docling or Unstructured."""
         path = Path(file_path).resolve()
         if not path.exists():
             raise FileNotFoundError(f"File not found: {path}")
@@ -38,6 +43,7 @@ class DocumentService:
             sec_ctx=sec_ctx,
             file_path=path,
             filename=filename or path.name,
+            backend=backend,
         )
 
         return IngestResult(

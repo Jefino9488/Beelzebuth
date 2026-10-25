@@ -25,6 +25,8 @@ dependencies = [
     "pydantic>=2.0",
     "pydantic-settings>=2.0",
     "markdown>=3.6",
+    "beautifulsoup4>=4.12",
+    "docling>=2.140",
     "python-multipart>=0.0.9",
 ]
 

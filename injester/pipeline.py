@@ -65,12 +65,13 @@ class InjesterPipeline:
         sec_ctx: SecurityContext,
         file_path: str | Path,
         filename: Optional[str] = None,
-        folder_id: Optional[str] = None
+        folder_id: Optional[str] = None,
+        backend: Optional[str] = None,
     ) -> Tuple[File, FileVersion, List[DocumentChunk]]:
         """
         Ingests a document into the tenant workspace:
         1. Validates tenant scope and stores file in DB + isolated disk storage.
-        2. Normalizes elements via Unstructured preserving section hierarchy.
+        2. Normalizes elements via Unstructured or Docling preserving section hierarchy.
         3. Chunks text with provenance metadata.
         4. Indexes chunks into the tenant's FAISS vector store.
         """
@@ -92,7 +93,7 @@ class InjesterPipeline:
 
         tenant_id = sec_ctx.organisation_id or "platform"
 
-        # 2. Extract with Unstructured
+        # 2. Extract with Unstructured or Docling
         normalized_elements = self.extractor.extract(
             file_path=version_record.storage_path,
             document_id=file_record.id,
@@ -100,6 +101,7 @@ class InjesterPipeline:
             tenant_id=tenant_id,
             file_version_id=version_record.id,
             file_hash=version_record.file_hash,
+            backend=backend,
         )
 
         # 3. Intelligent Hierarchical Chunking
