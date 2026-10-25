@@ -153,7 +153,7 @@ Add to your `claude_desktop_config.json`:
 
 For an in-depth breakdown of the internal pipeline, data models, and span provenance engine, see the full architecture document:
 
-📖 **[System Architecture Specification](file:///home/jefino9488/.gemini/antigravity/brain/b140011b-3ea2-4229-8929-55af3e932f56/beelzebuth_architecture.md)**
+📖 **[System Architecture Specification](docs/ARCHITECTURE.md)**
 
 ```
 ┌──────────────────┐     ┌──────────────────────┐     ┌────────────────────────┐
