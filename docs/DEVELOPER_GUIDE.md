@@ -184,7 +184,7 @@ python3 --version
 # Run workspace diagnostic
 injester doctor
 
-# Run full pytest suite (171 tests)
+# Run full pytest suite (247 tests)
 ./venv/bin/pytest
 
 # Run DOCX acceptance suite specifically (14 gates)

@@ -231,3 +231,25 @@ class ApprovalTokenModel(Base):
 
     def __repr__(self) -> str:
         return f"<ApprovalToken(hash={self.token_hash[:8]}..., cs={self.changeset_id}, consumed={self.consumed})>"
+
+
+class ChangeSetModel(Base):
+    """
+    Transactional, versioned ChangeSet record for cross-process synchronization.
+    Maintains optimistic locking version, document version, status, and payload.
+    Ensures MCP, Web Workbench, and CLI share consistent, authoritative ChangeSet state.
+    """
+    __tablename__ = "changesets"
+
+    changeset_id = Column(String(64), primary_key=True)
+    document_id = Column(String(255), nullable=False, index=True)
+    document_version = Column(String(64), nullable=False)
+    status = Column(String(32), nullable=False, index=True)
+    file_path = Column(Text, nullable=True)
+    payload_json = Column(Text, nullable=False)
+    version = Column(Integer, default=1, nullable=False)
+    created_at = Column(Float, nullable=False)
+    updated_at = Column(Float, nullable=False)
+
+    def __repr__(self) -> str:
+        return f"<ChangeSetModel(id={self.changeset_id}, status={self.status}, ver={self.version})>"

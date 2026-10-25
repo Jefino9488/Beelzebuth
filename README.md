@@ -452,7 +452,7 @@ Every applied ChangeSet is verified against four distinct pillars:
 ## 14. Automated Test Suites
 
 ```bash
-# Run full test suite (244 tests)
+# Run full test suite (247 tests)
 ./venv/bin/pytest -v
 
 # Run MCP and document tool security suite
@@ -462,7 +462,7 @@ Every applied ChangeSet is verified against four distinct pillars:
 ./venv/bin/pytest tests/test_docx_roundtrip_acceptance.py -v
 ```
 
-Current test baseline: **244 passing** across unit, security, concurrent token races, cross-process persistence, protocol-level MCP, and real enterprise document round-trip acceptance tests.
+Current test baseline: **247 passing** across unit, security, concurrent token races, cross-process persistence, protocol-level MCP, and real enterprise document round-trip acceptance tests.
 
 ---
 

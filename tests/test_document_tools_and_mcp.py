@@ -758,3 +758,115 @@ def test_persistence_failure_fails_closed(sample_docx, monkeypatch):
     with pytest.raises(RuntimeError) as exc_info:
         service.verify_and_consume_approval_token(cs_id, "appr_dummy_token_12345")
     assert "Database error during token verification" in str(exc_info.value)
+
+
+def test_cross_process_stale_cache_invalidation_and_authoritative_application(sample_docx, temp_output_docx):
+    """
+    Cross-Process Consistency:
+    1. Process 1 proposes a ChangeSet and caches it in memory (status: PROPOSED, version: 1).
+    2. Process 2 (e.g. Web Workbench) approves it and persists the updated ChangeSet (status: APPROVED, version: 2).
+    3. Process 1 (e.g. MCP agent) reads and applies the ChangeSet.
+    Authoritative persistence invalidates Process 1's stale cache, applies the approved ChangeSet
+    without throwing a ChangeSetNotApprovedError, and never clobbers newer persistent state.
+    """
+    proc1_svc = DocumentToolService()
+    prop = proc1_svc.propose_text_edit(
+        sample_docx,
+        block_id="block-003",
+        new_text="Cross-process cache invalidation verified text.",
+    )
+    cs_id = prop["changeset_id"]
+
+    # Verify Process 1 holds the proposed ChangeSet in its local memory cache
+    assert cs_id in proc1_svc._changesets
+    assert proc1_svc._changesets[cs_id].status == "PROPOSED"
+    assert proc1_svc._changeset_versions.get(cs_id) == 1
+
+    # Process 2 loads from persistence and approves the ChangeSet
+    proc2_svc = DocumentToolService()
+    human_token = proc2_svc.issue_approval_token(cs_id, approver="workbench_admin")
+    approved_cs = proc2_svc.approve_changeset(cs_id, approval_token=human_token)
+    assert approved_cs["status"] == "APPROVED"
+    assert proc2_svc._changeset_versions.get(cs_id) == 2
+
+    # CRITICAL TEST: Process 1 still has status == "PROPOSED" in its in-memory dict!
+    assert proc1_svc._changesets[cs_id].status == "PROPOSED"
+
+    # Process 1 now applies the changeset. It must detect that persistent store is version 2,
+    # refresh its local cache, and successfully compile and verify the document.
+    apply_result = proc1_svc.apply_changeset(cs_id, output_path=temp_output_docx)
+    assert apply_result["is_successful"] is True
+    assert apply_result["unmodified_blocks_intact"] is True
+
+    # Process 1's local cache should now reflect the approved, authoritative state
+    assert proc1_svc._changesets[cs_id].status == "APPROVED"
+    assert proc1_svc._changeset_versions.get(cs_id) == 2
+
+    # Verify the persistent store was NOT overwritten with stale 'PROPOSED' state
+    refreshed_proc2 = DocumentToolService()
+    cs_record = refreshed_proc2._get_changeset(cs_id)
+    assert cs_record is not None
+    assert cs_record.status == "APPROVED"
+    assert cs_record.approval_signature is not None
+
+
+def test_changeset_id_validation_and_path_traversal_rejection(sample_docx):
+    """Security Boundary: Validates ChangeSet ID against format rules and prevents filesystem traversal."""
+    from injester.application.document_tools import validate_changeset_id
+
+    service = DocumentToolService()
+
+    # Valid ChangeSet IDs must pass
+    assert validate_changeset_id("cs_1234567890").name == "cs_1234567890.json"
+    assert validate_changeset_id("cs-alpha-beta-01").name == "cs-alpha-beta-01.json"
+
+    # Traversal and invalid patterns must be rejected with ValueError
+    malicious_ids = [
+        "../../../etc/passwd",
+        "cs_test/../secret",
+        "cs_test\\..\\secret",
+        "cs_test\0evil",
+        "cs!@#$%",
+        "cs with spaces",
+        "",
+        "a" * 65,  # Exceeds max length
+    ]
+
+    for bad_id in malicious_ids:
+        with pytest.raises(ValueError):
+            validate_changeset_id(bad_id)
+
+        # _get_changeset returns None for invalid IDs
+        assert service._get_changeset(bad_id) is None
+
+        # get_changeset raises ValueError
+        with pytest.raises(ValueError):
+            service.get_changeset(bad_id)
+
+
+def test_stale_changeset_save_rejects_concurrent_overwrite(sample_docx):
+    """Optimistic Concurrency: Saving a stale in-memory ChangeSet over a newer persistent version is rejected."""
+    proc1_svc = DocumentToolService()
+    prop = proc1_svc.propose_text_edit(
+        sample_docx,
+        block_id="block-003",
+        new_text="Concurrent save conflict test.",
+    )
+    cs_id = prop["changeset_id"]
+
+    # Keep a reference to the version 1 ChangeSet in Process 1
+    stale_cs = proc1_svc._changesets[cs_id]
+    assert proc1_svc._changeset_versions[cs_id] == 1
+
+    # Process 2 updates the ChangeSet to version 2
+    proc2_svc = DocumentToolService()
+    token = proc2_svc.issue_approval_token(cs_id)
+    proc2_svc.approve_changeset(cs_id, approval_token=token)
+    assert proc2_svc._changeset_versions[cs_id] == 2
+
+    # Process 1 attempts to blindly overwrite the database using its stale version 1
+    with pytest.raises(RuntimeError) as exc_info:
+        proc1_svc._save_changeset(stale_cs)
+
+    assert "Concurrent modification conflict" in str(exc_info.value)
+

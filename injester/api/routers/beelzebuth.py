@@ -520,7 +520,7 @@ def preview_document_changeset(req: PreviewChangeSetRequest):
     """Generates before/after diff summary and structural impact analysis (no approval token)."""
     try:
         document_tools.get_changeset(req.changeset_id)
-    except KeyError:
+    except (KeyError, ValueError):
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"ChangeSet '{req.changeset_id}' not found.",
@@ -547,7 +547,7 @@ def issue_changeset_approval_token(
     """
     try:
         document_tools.get_changeset(req.changeset_id)
-    except KeyError:
+    except (KeyError, ValueError):
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"ChangeSet '{req.changeset_id}' not found.",
@@ -586,7 +586,7 @@ def approve_document_changeset(
     """
     try:
         cs = document_tools.get_changeset(req.changeset_id)
-    except KeyError:
+    except (KeyError, ValueError):
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"ChangeSet '{req.changeset_id}' not found.",
@@ -629,7 +629,7 @@ def recompile_document_changeset(req: RecompileRequest):
     """Recompiles an approved ChangeSet and verifies document integrity."""
     try:
         cs_dict = document_tools.get_changeset(req.changeset_id)
-    except KeyError:
+    except (KeyError, ValueError):
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"ChangeSet '{req.changeset_id}' not found.",

@@ -16,6 +16,9 @@ approval checks across both application and MCP interfaces without duplicated lo
 import os
 import io
 import time
+import json
+import re
+import logging
 import secrets
 import hmac
 import zipfile
@@ -25,6 +28,8 @@ import sqlite3
 from pathlib import Path
 from typing import List, Dict, Optional, Any, Tuple, Union
 from pydantic import BaseModel, Field
+
+logger = logging.getLogger("injester.document_tools")
 
 from injester.config import settings
 from injester.domain.auth import SecurityContext, AccessDeniedError
@@ -67,6 +72,37 @@ class ApprovalTokenRecord(BaseModel):
     token: Optional[str] = None
 
 
+CHANGESET_ID_REGEX = re.compile(r"^[a-zA-Z0-9_\-]{1,64}$")
+
+
+def validate_changeset_id(changeset_id: str) -> Path:
+    """
+    Validates ChangeSet ID against expected format and prevents filesystem path traversal.
+    Returns the resolved Path inside settings.STORAGE_DIR / 'changesets'.
+    Raises ValueError if the ID is invalid or resolves outside the changesets directory.
+    """
+    if not changeset_id or not isinstance(changeset_id, str):
+        raise ValueError("ChangeSet ID must be a non-empty string.")
+
+    cleaned_id = changeset_id.strip()
+    if not CHANGESET_ID_REGEX.match(cleaned_id):
+        raise ValueError(
+            f"Invalid ChangeSet ID format: '{changeset_id}'. "
+            f"ChangeSet IDs must be 1-64 characters matching [a-zA-Z0-9_-]."
+        )
+
+    cs_dir = (settings.STORAGE_DIR / "changesets").resolve()
+    cs_dir.mkdir(parents=True, exist_ok=True)
+    target = (cs_dir / f"{cleaned_id}.json").resolve()
+
+    if not target.is_relative_to(cs_dir):
+        raise ValueError(
+            f"Security Violation: ChangeSet ID '{changeset_id}' resolved to path outside changesets directory."
+        )
+
+    return target
+
+
 def _get_token_db_path() -> Path:
     return settings.WORKSPACE_DIR / "injester.db"
 
@@ -93,46 +129,197 @@ def _connect_token_db() -> sqlite3.Connection:
     """)
     conn.execute("CREATE INDEX IF NOT EXISTS idx_approval_tokens_cs ON approval_tokens(changeset_id);")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_approval_tokens_exp ON approval_tokens(expires_at);")
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS changesets (
+            changeset_id VARCHAR(64) PRIMARY KEY,
+            document_id VARCHAR(255) NOT NULL,
+            document_version VARCHAR(64) NOT NULL,
+            status VARCHAR(32) NOT NULL,
+            file_path TEXT,
+            payload_json TEXT NOT NULL,
+            version INTEGER DEFAULT 1 NOT NULL,
+            created_at REAL NOT NULL,
+            updated_at REAL NOT NULL
+        );
+    """)
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_changesets_doc ON changesets(document_id);")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_changesets_status ON changesets(status);")
     conn.commit()
     return conn
+
+_connect_db = _connect_token_db
 
 
 class DocumentToolService:
     """
     Unified application service for all document operations.
     Maintains active document sessions and proposed/approved ChangeSets.
+    Uses authoritative transactional SQLite persistence with optimistic locking
+    to synchronize state consistently across MCP, Web Workbench, and CLI processes.
     """
 
     def __init__(self, pipeline: Optional[DocxRoundTripPipeline] = None):
         self.pipeline = pipeline or DocxRoundTripPipeline()
         self._sessions: Dict[str, DocumentEditSession] = {}
         self._changesets: Dict[str, ChangeSet] = {}
+        self._changeset_versions: Dict[str, int] = {}
+        self._changeset_mtimes: Dict[str, float] = {}
         self._changeset_to_session: Dict[str, str] = {}
         self._verification_reports: Dict[str, RoundTripVerificationReport] = {}
 
     def _save_changeset(self, cs: ChangeSet) -> None:
-        """Persists ChangeSet in-memory and to disk for cross-process access (MCP, API, CLI)."""
+        """
+        Persists ChangeSet to transactional SQLite storage and disk JSON with optimistic versioning.
+        Authoritative persistent store prevents cross-process race conditions and stale overwrites.
+        """
+        target = validate_changeset_id(cs.changeset_id)
+        payload_json = cs.model_dump_json(indent=2)
+        now = time.time()
+
+        try:
+            with _connect_db() as conn:
+                cursor = conn.cursor()
+                cursor.execute(
+                    "SELECT version, status FROM changesets WHERE changeset_id = ?",
+                    (cs.changeset_id,)
+                )
+                row = cursor.fetchone()
+                if not row:
+                    new_version = 1
+                    cursor.execute(
+                        """
+                        INSERT INTO changesets (
+                            changeset_id, document_id, document_version, status,
+                            file_path, payload_json, version, created_at, updated_at
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        (cs.changeset_id, cs.document_id, cs.document_version, cs.status,
+                         cs.file_path, payload_json, new_version, now, now)
+                    )
+                else:
+                    curr_version, curr_status = row
+                    known_version = self._changeset_versions.get(cs.changeset_id)
+                    # Optimistic concurrency check: if local cache is behind database, reject overwrite
+                    if known_version is not None and known_version < curr_version:
+                        raise RuntimeError(
+                            f"Concurrent modification conflict: ChangeSet '{cs.changeset_id}' was updated by another process "
+                            f"(local version: {known_version}, persistent store version: {curr_version}, status: '{curr_status}')."
+                        )
+                    new_version = curr_version + 1
+                    cursor.execute(
+                        """
+                        UPDATE changesets
+                        SET document_version = ?, status = ?, file_path = ?,
+                            payload_json = ?, version = ?, updated_at = ?
+                        WHERE changeset_id = ? AND version = ?
+                        """,
+                        (cs.document_version, cs.status, cs.file_path,
+                         payload_json, new_version, now, cs.changeset_id, curr_version)
+                    )
+                    if cursor.rowcount != 1:
+                        raise RuntimeError(
+                            f"Concurrent modification race condition: ChangeSet '{cs.changeset_id}' was updated concurrently."
+                        )
+                conn.commit()
+        except (RuntimeError, ValueError):
+            raise
+        except Exception as e:
+            raise RuntimeError(f"Database error persisting ChangeSet '{cs.changeset_id}': {e}") from e
+
+        # Also write to disk JSON for export and transparent human inspection
+        target.write_text(payload_json)
+
+        # Update local memory cache with authoritative version
         self._changesets[cs.changeset_id] = cs
+        self._changeset_versions[cs.changeset_id] = new_version
+        self._changeset_mtimes[cs.changeset_id] = target.stat().st_mtime
         if cs.file_path:
             self._changeset_to_session[cs.changeset_id] = cs.file_path
-        cs_dir = settings.STORAGE_DIR / "changesets"
-        cs_dir.mkdir(parents=True, exist_ok=True)
-        target = cs_dir / f"{cs.changeset_id}.json"
-        target.write_text(cs.model_dump_json(indent=2))
 
     def _get_changeset(self, changeset_id: str) -> Optional[ChangeSet]:
-        """Retrieves ChangeSet from memory cache or persisted disk storage."""
-        cs = self._changesets.get(changeset_id)
-        if cs:
-            return cs
-        cs_dir = settings.STORAGE_DIR / "changesets"
-        target = cs_dir / f"{changeset_id}.json"
+        """
+        Retrieves ChangeSet from authoritative transactional storage.
+        Detects if another process updated the persisted record and refreshes local memory cache.
+        """
+        try:
+            target = validate_changeset_id(changeset_id)
+        except ValueError:
+            # Invalid ID format or path traversal rejected early
+            return None
+
+        # 1. Query transactional SQLite repository for authoritative record
+        try:
+            with _connect_db() as conn:
+                cursor = conn.cursor()
+                cursor.execute(
+                    """
+                    SELECT version, status, payload_json, file_path, updated_at
+                    FROM changesets
+                    WHERE changeset_id = ?
+                    """,
+                    (changeset_id,)
+                )
+                row = cursor.fetchone()
+                if row:
+                    db_version, db_status, payload_json, file_path, updated_at = row
+                    cached_cs = self._changesets.get(changeset_id)
+                    cached_version = self._changeset_versions.get(changeset_id)
+
+                    # If cached in memory and version matches DB, return cached instance
+                    if cached_cs is not None and cached_version == db_version:
+                        return cached_cs
+
+                    # Otherwise, DB has newer or freshly discovered state: reload authoritative ChangeSet
+                    fresh_cs = ChangeSet.model_validate_json(payload_json)
+                    self._changesets[changeset_id] = fresh_cs
+                    self._changeset_versions[changeset_id] = db_version
+                    if target.exists():
+                        self._changeset_mtimes[changeset_id] = target.stat().st_mtime
+                    if file_path or fresh_cs.file_path:
+                        self._changeset_to_session[changeset_id] = file_path or fresh_cs.file_path
+                    return fresh_cs
+        except Exception as e:
+            logger.warning("Failed to query ChangeSet from SQLite database: %s", e)
+
+        # 2. Fallback to persisted disk JSON file (e.g. if created outside DB or DB was reinitialized)
         if target.exists():
-            cs = ChangeSet.model_validate_json(target.read_text())
-            self._changesets[changeset_id] = cs
-            if cs.file_path:
-                self._changeset_to_session[changeset_id] = cs.file_path
-            return cs
+            try:
+                curr_mtime = target.stat().st_mtime
+                cached_cs = self._changesets.get(changeset_id)
+                cached_mtime = self._changeset_mtimes.get(changeset_id)
+
+                if cached_cs is not None and cached_mtime == curr_mtime:
+                    return cached_cs
+
+                payload = target.read_text(encoding="utf-8")
+                fresh_cs = ChangeSet.model_validate_json(payload)
+                self._changesets[changeset_id] = fresh_cs
+                self._changeset_mtimes[changeset_id] = curr_mtime
+                if fresh_cs.file_path:
+                    self._changeset_to_session[changeset_id] = fresh_cs.file_path
+
+                # Backfill into SQLite for future transactional versioning
+                try:
+                    with _connect_db() as conn:
+                        conn.execute(
+                            """
+                            INSERT OR REPLACE INTO changesets (
+                                changeset_id, document_id, document_version, status,
+                                file_path, payload_json, version, created_at, updated_at
+                            ) VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?)
+                            """,
+                            (fresh_cs.changeset_id, fresh_cs.document_id, fresh_cs.document_version,
+                             fresh_cs.status, fresh_cs.file_path, payload, time.time(), curr_mtime)
+                        )
+                        conn.commit()
+                        self._changeset_versions[changeset_id] = 1
+                except Exception:
+                    pass
+
+                return fresh_cs
+            except Exception as e:
+                logger.warning("Failed to load ChangeSet JSON file '%s': %s", target, e)
+
         return None
 
     # ------------------------------------------------------------------
@@ -553,6 +740,7 @@ class DocumentToolService:
         sec_ctx: Optional[SecurityContext] = None,
     ) -> Dict[str, Any]:
         """Retrieves an existing ChangeSet by ID."""
+        validate_changeset_id(changeset_id)
         cs = self._get_changeset(changeset_id)
         if not cs:
             raise KeyError(f"ChangeSet '{changeset_id}' not found.")
@@ -898,6 +1086,14 @@ class DocumentToolService:
         )
 
         self._verification_reports[changeset_id] = report
+        try:
+            vr_dir = (settings.STORAGE_DIR / "verification_reports").resolve()
+            vr_dir.mkdir(parents=True, exist_ok=True)
+            vr_file = vr_dir / f"{changeset_id}.json"
+            vr_file.write_text(report.model_dump_json(indent=2), encoding="utf-8")
+        except Exception as e:
+            logger.warning("Failed to persist verification report for '%s': %s", changeset_id, e)
+
         return report.model_dump()
 
     def verify_document(
@@ -1221,10 +1417,17 @@ class DocumentToolService:
         sec_ctx: Optional[SecurityContext] = None,
     ) -> Dict[str, Any]:
         """Retrieves the verification and audit report for an applied ChangeSet."""
+        validate_changeset_id(changeset_id)
         report = self._verification_reports.get(changeset_id)
-        if not report:
-            raise KeyError(f"No verification report recorded for ChangeSet '{changeset_id}'.")
-        return report.model_dump()
+        if report:
+            return report.model_dump()
+        try:
+            vr_file = settings.STORAGE_DIR / "verification_reports" / f"{changeset_id}.json"
+            if vr_file.exists():
+                return json.loads(vr_file.read_text(encoding="utf-8"))
+        except Exception:
+            pass
+        raise KeyError(f"No verification report recorded for ChangeSet '{changeset_id}'.")
 
 
 # Shared application-level singleton
