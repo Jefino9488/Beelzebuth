@@ -2,8 +2,8 @@ import re
 from typing import List, Dict, Literal
 from pydantic import BaseModel, Field
 from injester.ingestion.schema import DocumentChunk
-from injester.sop.llm_client import get_instructor_client
-from injester.sop.spans import SpanRegistry
+from injester.synthesis.llm_client import get_instructor_client
+from injester.synthesis.spans import SpanRegistry
 
 class ExpectedRule(BaseModel):
     """
@@ -16,7 +16,7 @@ class ExpectedRule(BaseModel):
     source_chunk_id: str = Field(description="Chunk ID where this rule originated")
     key_terms: List[str] = Field(
         default_factory=list,
-        description="Key terms, amounts, or thresholds that must be present in the SOP to satisfy this rule (e.g. ['$20,000', 'Branch Manager'])"
+        description="Key terms, amounts, or thresholds that must be present in the document to satisfy this rule (e.g. ['$20,000', 'Branch Manager'])"
     )
 
 class DocumentKnowledgeMap(BaseModel):
@@ -60,12 +60,12 @@ def extract_knowledge_map(chunks: List[DocumentChunk], span_registry: SpanRegist
         found_titles = re.findall(r'^\d+\.\s+[^\n]+', c.text, re.MULTILINE)
         for t in found_titles:
             t_clean = t.strip()
-            if t_clean not in source_headings and not t_clean.startswith("SOP-"):
+            if t_clean not in source_headings and not t_clean.startswith("SEC-"):
                 source_headings.append(t_clean)
         if c.section_hierarchy:
             for s in c.section_hierarchy:
                 s_clean = s.strip()
-                if s_clean and s_clean not in source_headings and not s_clean.startswith("SOP-"):
+                if s_clean and s_clean not in source_headings and not s_clean.startswith("SEC-"):
                     source_headings.append(s_clean)
 
     # Dual-mode SLA & Exception detection
@@ -110,7 +110,7 @@ def extract_knowledge_map(chunks: List[DocumentChunk], span_registry: SpanRegist
         "3. SECTION SYNTHESIS:\n"
         "   - If explicit section titles exist in the source, recommended_sections must mirror ONLY those substantive sections. "
         "Do NOT invent phantom sections (such as 'Absence Tracking', 'Leave Types', or 'Portal Usage').\n"
-        "   - If the source has NO explicit section headers (raw narrative prose), you MUST synthesize standard logical SOP sections "
+        "   - If the source has NO explicit section headers (raw narrative prose), you MUST synthesize standard logical document sections "
         "(e.g., 'Purpose & Scope', 'Roles & Responsibilities', 'Procedural Workflow', 'Exceptions & Escalations') warranted by the text.\n"
         "4. For every extracted rule, identify 1-3 key_terms (numbers, roles, actions) essential to verifying that rule."
     )

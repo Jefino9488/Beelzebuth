@@ -2,9 +2,9 @@ import re
 from typing import List, Dict, Set, Optional, Union, NamedTuple
 from pydantic import BaseModel, Field
 from injester.ingestion.schema import DocumentChunk
-from injester.sop.schemas import SOPDocument, SOPSection, CitationRef, ClaimCitation, SOPClaim
-from injester.sop.spans import SpanRegistry, SourceSpan
-from injester.sop.knowledge_map import extract_knowledge_map, DocumentKnowledgeMap, ExpectedRule
+from injester.synthesis.schemas import DigestDocument, DigestSection, CitationRef, ClaimCitation, DigestClaim
+from injester.synthesis.spans import SpanRegistry, SourceSpan
+from injester.synthesis.knowledge_map import extract_knowledge_map, DocumentKnowledgeMap, ExpectedRule
 
 class EntailmentVerdict(NamedTuple):
     is_entailed: bool
@@ -18,15 +18,17 @@ class EntailmentVerdict(NamedTuple):
 class ValidationReport(BaseModel):
     is_valid: bool = Field(description="True if there are zero critical errors")
     chunk_coverage_score: float = Field(default=1.0, description="% of eligible source chunks represented in citations")
-    rule_coverage_score: float = Field(default=1.0, description="% of source rules and thresholds represented in the SOP")
+    rule_coverage_score: float = Field(default=1.0, description="% of source rules and thresholds represented in the document")
     claim_entailment_score: float = Field(default=1.0, description="% of citations with verified factual entailment")
     citation_correctness_score: float = Field(default=1.0, description="% of citations properly formed and mapped to valid spans")
     unsupported_claims_count: int = Field(default=0, description="Number of procedural/rule claims lacking valid citations")
     unsupported_claims: List[str] = Field(default_factory=list, description="Verbatim list of ungrounded or unentailed claims")
-    unrepresented_rules: List[str] = Field(default_factory=list, description="Expected source rules missing from the SOP")
+    unrepresented_rules: List[str] = Field(default_factory=list, description="Expected source rules missing from the document")
     errors: List[str] = Field(default_factory=list, description="Critical citation or provenance failures")
     warnings: List[str] = Field(default_factory=list, description="Non-critical warnings")
     verified_citation_index: Dict[str, CitationRef] = Field(default_factory=dict)
+
+_SHARED_NLI_VERIFIER = None
 
 class CitationValidator:
     """
@@ -41,7 +43,11 @@ class CitationValidator:
         self._nli_initialized = False
 
     def _get_nli(self) -> Optional[Any]:
+        global _SHARED_NLI_VERIFIER
         if self.nli_verifier is not None:
+            return self.nli_verifier
+        if _SHARED_NLI_VERIFIER is not None and getattr(_SHARED_NLI_VERIFIER, "model", None) is not None:
+            self.nli_verifier = _SHARED_NLI_VERIFIER
             return self.nli_verifier
         if not self._nli_initialized:
             self._nli_initialized = True
@@ -50,6 +56,7 @@ class CitationValidator:
                 verifier = OpenJevVerifier(load_model=True)
                 verifier._ensure_model_loaded()
                 if verifier.model is not None:
+                    _SHARED_NLI_VERIFIER = verifier
                     self.nli_verifier = verifier
             except Exception:
                 self.nli_verifier = None
@@ -57,7 +64,7 @@ class CitationValidator:
 
     def validate_document(
         self,
-        sop_doc: SOPDocument,
+        doc: DigestDocument,
         available_chunks: List[DocumentChunk],
         knowledge_map: Optional[DocumentKnowledgeMap] = None
     ) -> ValidationReport:
@@ -71,7 +78,7 @@ class CitationValidator:
         chunk_lookup: Dict[str, DocumentChunk] = {c.chunk_id: c for c in available_chunks}
 
         # 2. Audit Citations per Section
-        for section in sop_doc.sections:
+        for section in doc.sections:
             tags_in_text: Set[str] = set(self.CITATION_REGEX.findall(section.content))
             section_citations_by_tag: Dict[str, Union[ClaimCitation, CitationRef]] = {}
 
@@ -210,17 +217,17 @@ class CitationValidator:
         all_expected_rules: List[ExpectedRule] = kmap.core_rules + kmap.exception_rules + kmap.sla_rules
         unrepresented_rules: List[str] = []
 
-        sop_full_text = " ".join(s.content for s in sop_doc.sections).lower()
+        doc_full_text = " ".join(s.content for s in doc.sections).lower()
         for rule in all_expected_rules:
-            # Check key terms in SOP text
+            # Check key terms in document text
             if rule.key_terms:
-                matched_terms = [t for t in rule.key_terms if t.lower() in sop_full_text]
+                matched_terms = [t for t in rule.key_terms if t.lower() in doc_full_text]
                 if not matched_terms:
                     unrepresented_rules.append(f"[{rule.category.upper()}] {rule.description}")
             else:
                 # Fallback: check if significant words appear
                 words = [w for w in re.findall(r'\b\w{4,}\b', rule.description.lower())]
-                matched = [w for w in words if w in sop_full_text]
+                matched = [w for w in words if w in doc_full_text]
                 if words and (len(matched) / len(words)) < 0.4:
                     unrepresented_rules.append(f"[{rule.category.upper()}] {rule.description}")
 
@@ -232,7 +239,7 @@ class CitationValidator:
 
         rule_coverage = (len(all_expected_rules) - len(unrepresented_rules)) / max(len(all_expected_rules), 1) if all_expected_rules else 1.0
 
-        total_claims_checked = sum(len(s.claims) for s in sop_doc.sections)
+        total_claims_checked = sum(len(s.claims) for s in doc.sections)
         if total_claims_checked > 0:
             claim_entailment_score = max(0.0, (total_claims_checked - len(unsupported_claims)) / total_claims_checked)
         else:
@@ -244,7 +251,7 @@ class CitationValidator:
         # Primary acceptance criteria
         is_valid = (len(errors) == 0) and (len(unsupported_claims) == 0)
 
-        sop_doc.citation_index = master_citation_index
+        doc.citation_index = master_citation_index
 
         return ValidationReport(
             is_valid=is_valid,

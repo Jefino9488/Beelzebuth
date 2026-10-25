@@ -35,7 +35,7 @@ class CitationRef(BaseModel):
     evidence_quote: str = Field(default="")
     entailment_status: str = Field(default="pending")
 
-class SOPClaim(BaseModel):
+class DigestClaim(BaseModel):
     """
     Granular claim with typed semantic category and immutable span ID binding.
     """
@@ -68,18 +68,18 @@ class VerifiedClaim(BaseModel):
 class VerifiedClaimIR(BaseModel):
     """
     Authoritative Intermediate Representation of verified claims prior to prose assembly.
-    Ensures that SOP generation is claim-first: evidence establishes -> claims verified -> prose assembled.
+    Ensures that document synthesis is claim-first: evidence establishes -> claims verified -> prose assembled.
     """
-    title: str = Field(default="Standard Operating Procedure")
+    title: str = Field(default="Standard Operational Document")
     purpose: str = Field(default="")
     target_audience: str = Field(default="")
     claims: List[VerifiedClaim] = Field(default_factory=list)
-    sections: List['SOPOutlineSection'] = Field(default_factory=list)
+    sections: List['DigestOutlineSection'] = Field(default_factory=list)
 
-class SOPOutlineSection(BaseModel):
-    """An outline section proposed for the SOP."""
+class DigestOutlineSection(BaseModel):
+    """An outline section proposed for the synthesized document."""
     section_title: str = Field(description="Title of the section, e.g. '1. Intake & Eligibility'")
-    section_goal: str = Field(description="Purpose of this section in the SOP")
+    section_goal: str = Field(description="Purpose of this section in the document")
     search_queries: List[str] = Field(default_factory=list, description="Specific queries to retrieve evidence chunks for this section")
     is_conditional: bool = Field(default=False, description="True if this section was conditionally added based on source evidence")
 
@@ -102,29 +102,29 @@ class SOPOutlineSection(BaseModel):
             return res
         return []
 
-class SOPOutline(BaseModel):
-    """The synthesized outline for the unified SOP."""
-    title: str = Field(default="Standard Operating Procedure", description="Title of the SOP")
-    purpose: str = Field(default="", description="Objective and scope of the standard operating procedure")
+class DigestOutline(BaseModel):
+    """The synthesized outline for the unified document."""
+    title: str = Field(default="Standard Operational Document", description="Title of the document")
+    purpose: str = Field(default="", description="Objective and scope of the standard operating document")
     target_audience: str = Field(default="", description="Intended audience (e.g. IT Administrators, Underwriters)")
-    sections: List[SOPOutlineSection] = Field(default_factory=list, description="Ordered list of sections")
+    sections: List[DigestOutlineSection] = Field(default_factory=list, description="Ordered list of sections")
 
 
-class SOPSection(BaseModel):
-    """A generated SOP section with embedded citation tags [S###], claims, and citations."""
+class DigestSection(BaseModel):
+    """A generated document section with embedded citation tags [S###], claims, and citations."""
     section_title: str = Field(description="Title of the section")
     content: str = Field(description="Detailed procedure text with embedded span citation tags like [S001], [S002]")
-    claims: List[SOPClaim] = Field(default_factory=list, description="List of granular assertions with their citations and types")
+    claims: List[DigestClaim] = Field(default_factory=list, description="List of granular assertions with their citations and types")
     citations: List[Union[ClaimCitation, CitationRef]] = Field(default_factory=list, description="Structured citations linking tags to chunk and span IDs")
 
-class SOPDocument(BaseModel):
-    """The complete auditable SOP document."""
+class DigestDocument(BaseModel):
+    """The complete auditable synthesized document."""
     title: str
     purpose: str
     target_audience: str
-    sections: List[SOPSection]
+    sections: List[DigestSection]
     citation_index: Dict[str, CitationRef] = Field(default_factory=dict)
 
 class CandidateClaimsResponse(BaseModel):
     """Container for candidate claims extracted prior to independent verification."""
-    claims: List[SOPClaim] = Field(default_factory=list, description="Extracted candidate claims citing exact span IDs")
+    claims: List[DigestClaim] = Field(default_factory=list, description="Extracted candidate claims citing exact span IDs")

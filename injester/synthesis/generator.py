@@ -1,31 +1,31 @@
 import re
 from typing import List, Dict, Optional, Tuple, Any
 from injester.ingestion.schema import DocumentChunk
-from injester.sop.schemas import (
-    SOPOutline,
-    SOPSection,
-    SOPDocument,
+from injester.synthesis.schemas import (
+    DigestOutline,
+    DigestSection,
+    DigestDocument,
     ClaimCitation,
-    SOPClaim,
+    DigestClaim,
     VerifiedClaim,
     VerifiedClaimIR,
     CandidateClaimsResponse,
-    SOPOutlineSection,
+    DigestOutlineSection,
 )
-from injester.sop.spans import SpanRegistry
-from injester.sop.knowledge_map import DocumentKnowledgeMap, extract_knowledge_map
-from injester.sop.llm_client import get_instructor_client
-from injester.sop.retriever import HybridRetriever
-from injester.sop.validator import CitationValidator
-from injester.sop.assembler import SOPAssembler
+from injester.synthesis.spans import SpanRegistry
+from injester.synthesis.knowledge_map import DocumentKnowledgeMap, extract_knowledge_map
+from injester.synthesis.llm_client import get_instructor_client
+from injester.synthesis.retriever import HybridRetriever
+from injester.synthesis.validator import CitationValidator
+from injester.synthesis.assembler import DigestAssembler
 from injester.vectorstore.base import VectorStore
 
 
-class SOPGenerator:
+class DigestGenerator:
     """
-    Claim-First, auditable SOP generator.
-    Pipeline: Source Chunks -> Extract Candidate Claims -> Verify Claims -> VerifiedClaimIR -> Assemble SOP.
-    Enforces that every statement in the generated SOP is backed by an independently verified evidence span.
+    Claim-First, auditable document generator.
+    Pipeline: Source Chunks -> Extract Candidate Claims -> Verify Claims -> VerifiedClaimIR -> Assemble Document.
+    Enforces that every statement in the generated document is backed by an independently verified evidence span.
     """
     def __init__(self, vector_store: Optional[VectorStore] = None):
         self.vector_store = vector_store
@@ -40,7 +40,7 @@ class SOPGenerator:
         section_goal: str,
         evidence_chunks: List[DocumentChunk],
         span_registry: SpanRegistry
-    ) -> List[SOPClaim]:
+    ) -> List[DigestClaim]:
         """
         Extracts candidate operational rules, thresholds, exceptions, and steps from evidence spans.
         Each candidate claim MUST cite its source span ID.
@@ -49,7 +49,7 @@ class SOPGenerator:
         evidence_text = "\n\n".join(evidence_blocks)
 
         system_instruction = (
-            "You are an authoritative factual claim extractor for technical standard operating procedures.\n"
+            "You are an authoritative factual claim extractor for technical operational procedures.\n"
             "Extract candidate operational rules, steps, thresholds, exceptions, and roles directly from the evidence.\n"
             "CRITICAL RULES:\n"
             "1. Each claim MUST cite the exact [S###] span ID where it appears in brackets (e.g. span_id='S014').\n"
@@ -62,7 +62,7 @@ class SOPGenerator:
             "Extract all substantive candidate claims with their exact span IDs."
         )
 
-        candidates: List[SOPClaim] = []
+        candidates: List[DigestClaim] = []
         try:
             resp = self.client.chat.completions.create(
                 model=self.model_name,
@@ -81,7 +81,7 @@ class SOPGenerator:
 
     def verify_claims(
         self,
-        candidates: List[SOPClaim],
+        candidates: List[DigestClaim],
         span_registry: SpanRegistry,
         validator: Optional[CitationValidator] = None
     ) -> List[VerifiedClaim]:
@@ -131,13 +131,13 @@ class SOPGenerator:
         section_goal: str,
         verified_claims: List[VerifiedClaim],
         span_registry: SpanRegistry
-    ) -> SOPSection:
+    ) -> DigestSection:
         """
-        Deterministically compiles verified claims into an auditable SOP section.
+        Deterministically compiles verified claims into an auditable document section.
         """
         if not verified_claims:
             content = f"No verified procedural claims established for {section_title}."
-            return SOPSection(
+            return DigestSection(
                 section_title=section_title,
                 content=content,
                 claims=[],
@@ -145,7 +145,7 @@ class SOPGenerator:
             )
 
         steps = []
-        sop_claims = []
+        digest_claims = []
         citations = []
 
         for c in verified_claims:
@@ -160,7 +160,7 @@ class SOPGenerator:
                 chunk_id=chunk_id,
                 span_id=sid
             )
-            sop_claims.append(SOPClaim(
+            digest_claims.append(DigestClaim(
                 claim_text=c.claim_text,
                 claim_type=c.claim_type,
                 span_id=sid,
@@ -169,10 +169,10 @@ class SOPGenerator:
             citations.append(claim_cit)
 
         content = "\n".join(steps)
-        return SOPSection(
+        return DigestSection(
             section_title=section_title,
             content=content,
-            claims=sop_claims,
+            claims=digest_claims,
             citations=citations
         )
 
@@ -183,7 +183,7 @@ class SOPGenerator:
         evidence_chunks: List[DocumentChunk],
         span_registry: SpanRegistry,
         validator: Optional[CitationValidator] = None
-    ) -> SOPSection:
+    ) -> DigestSection:
         """
         Claim-first section generation: extract candidates -> verify -> assemble.
         """
@@ -196,9 +196,9 @@ class SOPGenerator:
         self,
         topic_goal: str,
         kmap: DocumentKnowledgeMap
-    ) -> SOPOutline:
+    ) -> DigestOutline:
         system_instruction = (
-            "You are an enterprise SOP architect. Design a Standard Operating Procedure outline "
+            "You are an enterprise document architect. Design an authoritative operational outline "
             "based strictly on the provided DocumentKnowledgeMap.\n"
             "STRICT SOURCE-DRIVEN TAXONOMY & CONTAINMENT RULES:\n"
             "1. You MUST generate outline sections corresponding EXACTLY to the Recommended Sections from the knowledge map. "
@@ -217,13 +217,13 @@ class SOPGenerator:
             f"- Mandatory Outline Sections: {', '.join(kmap.recommended_sections)}\n"
             f"- Has Exceptions: {kmap.has_exceptions}\n"
             f"- Has SLAs: {kmap.has_slas}\n\n"
-            f"Generate the concise, source-contained SOPOutline mirroring the Mandatory Outline Sections."
+            f"Generate the concise, source-contained DigestOutline mirroring the Mandatory Outline Sections."
         )
 
         try:
             outline = self.client.chat.completions.create(
                 model=self.model_name,
-                response_model=SOPOutline,
+                response_model=DigestOutline,
                 messages=[
                     {"role": "system", "content": system_instruction},
                     {"role": "user", "content": user_prompt}
@@ -233,11 +233,11 @@ class SOPGenerator:
             return outline
         except Exception:
             sections = [
-                SOPOutlineSection(section_title=sec, section_goal=f"Operational requirements for {sec}", search_queries=[sec])
+                DigestOutlineSection(section_title=sec, section_goal=f"Operational requirements for {sec}", search_queries=[sec])
                 for sec in (kmap.recommended_sections or ["Standard Procedure"])
             ]
-            return SOPOutline(
-                title=kmap.title or "Standard Operating Procedure",
+            return DigestOutline(
+                title=kmap.title or "Standard Operational Document",
                 purpose=kmap.summary or topic_goal,
                 target_audience="",
                 sections=sections
@@ -304,16 +304,16 @@ class SOPGenerator:
         self.last_claim_ir = claim_ir
         return claim_ir
 
-    def build_sop_from_chunks(
+    def build_digest_from_chunks(
         self,
         topic_goal: str,
         chunks: List[DocumentChunk],
         span_registry: Optional[SpanRegistry] = None,
         flowchart_mermaid: Optional[str] = None
-    ) -> Tuple[SOPDocument, Any, str]:
+    ) -> Tuple[DigestDocument, Any, str]:
         """
-        Claim-First SOP compilation pipeline.
-        Source Chunks -> VerifiedClaimIR -> SOPDocument -> Markdown.
+        Claim-First document compilation pipeline.
+        Source Chunks -> VerifiedClaimIR -> DigestDocument -> Markdown.
         """
         if span_registry is None:
             span_registry = SpanRegistry.from_chunks(chunks)
@@ -321,7 +321,7 @@ class SOPGenerator:
         claim_ir = self.build_claim_ir(topic_goal, chunks, span_registry)
         val = CitationValidator()
 
-        generated_sections: List[SOPSection] = []
+        generated_sections: List[DigestSection] = []
         for outline_sec in claim_ir.sections:
             if len(chunks) <= 8:
                 evidence = chunks
@@ -347,35 +347,35 @@ class SOPGenerator:
             )
             generated_sections.append(sec)
 
-        sop_doc = SOPDocument(
+        digest_doc = DigestDocument(
             title=claim_ir.title,
             purpose=claim_ir.purpose,
             target_audience=claim_ir.target_audience,
             sections=generated_sections,
         )
 
-        report = val.validate_document(sop_doc, chunks, knowledge_map=getattr(self, 'last_kmap', None))
-        assembler = SOPAssembler()
-        markdown_sop = assembler.assemble_markdown(sop_doc, report)
+        report = val.validate_document(digest_doc, chunks, knowledge_map=getattr(self, 'last_kmap', None))
+        assembler = DigestAssembler()
+        markdown_digest = assembler.assemble_markdown(digest_doc, report)
         if flowchart_mermaid:
             toc_marker = "---\n\n"
-            if toc_marker in markdown_sop:
-                parts = markdown_sop.split(toc_marker, 1)
+            if toc_marker in markdown_digest:
+                parts = markdown_digest.split(toc_marker, 1)
                 diagram_block = f"## Process Workflow Diagram\n\n```mermaid\n{flowchart_mermaid.strip()}\n```\n\n---\n\n"
-                markdown_sop = parts[0] + toc_marker + diagram_block + parts[1]
+                markdown_digest = parts[0] + toc_marker + diagram_block + parts[1]
 
-        return sop_doc, report, markdown_sop
+        return digest_doc, report, markdown_digest
 
-    def build_sop(
+    def build_digest(
         self,
         tenant_id: str,
         topic_goal: str,
         all_tenant_chunks: List[DocumentChunk]
-    ) -> SOPDocument:
+    ) -> DigestDocument:
         span_registry = SpanRegistry.from_chunks(all_tenant_chunks)
-        sop_doc, _, _ = self.build_sop_from_chunks(
+        digest_doc, _, _ = self.build_digest_from_chunks(
             topic_goal=topic_goal,
             chunks=all_tenant_chunks,
             span_registry=span_registry
         )
-        return sop_doc
+        return digest_doc

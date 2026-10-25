@@ -1,21 +1,21 @@
 import re
 from typing import Dict, Optional
-from injester.sop.schemas import SOPDocument, CitationRef
+from injester.synthesis.schemas import DigestDocument, CitationRef
 
-class SOPAssembler:
+class DigestAssembler:
     """
-    Assembles a validated SOPDocument into clean, auditable Markdown
+    Assembles a validated DigestDocument into clean, auditable Markdown
     with automated heading de-duplication and a granular Evidence Appendix.
     """
-    def assemble_markdown(self, sop: SOPDocument, validation_report=None) -> str:
+    def assemble_markdown(self, doc: DigestDocument, validation_report=None) -> str:
         lines = []
 
         # Document Header
-        lines.append(f"# {sop.title}")
+        lines.append(f"# {doc.title}")
         lines.append("")
         lines.append("## Document Metadata & Scope")
-        lines.append(f"- **Purpose:** {sop.purpose}")
-        lines.append(f"- **Target Audience:** {sop.target_audience}")
+        lines.append(f"- **Purpose:** {doc.purpose}")
+        lines.append(f"- **Target Audience:** {doc.target_audience}")
         if validation_report is not None:
             if validation_report.is_valid:
                 badge = f"PASS (100% Entailed, 0 Unsupported Claims, {int(validation_report.rule_coverage_score * 100)}% Rule Coverage)"
@@ -28,16 +28,16 @@ class SOPAssembler:
 
         # Table of Contents
         lines.append("## Table of Contents")
-        for idx, section in enumerate(sop.sections, 1):
+        for idx, section in enumerate(doc.sections, 1):
             clean_anchor = section.section_title.lower().replace(" ", "-").replace(".", "")
             lines.append(f"{idx}. [{section.section_title}](#{clean_anchor})")
-        lines.append(f"{len(sop.sections) + 1}. [Evidence & Citation Index](#evidence--citation-index)")
+        lines.append(f"{len(doc.sections) + 1}. [Evidence & Citation Index](#evidence--citation-index)")
         lines.append("")
         lines.append("---")
         lines.append("")
 
         # Sections with Heading De-Duplication
-        for section in sop.sections:
+        for section in doc.sections:
             lines.append(f"## {section.section_title}")
             lines.append("")
 
@@ -56,7 +56,7 @@ class SOPAssembler:
         lines.append("> Every procedural instruction, rule, and threshold in this document is traced back to an immutable source evidence span.")
         lines.append("")
 
-        citation_items = list(sop.citation_index.items())
+        citation_items = list(doc.citation_index.items())
         def sort_key(item):
             tag = item[0]
             num_part = ''.join(filter(str.isdigit, tag))
