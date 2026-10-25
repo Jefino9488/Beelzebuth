@@ -13,10 +13,13 @@ Hardenings covered:
 """
 
 import os
+import sys
 import shutil
+import subprocess
 import zipfile
 import tempfile
 import time
+import sqlite3
 from concurrent.futures import ThreadPoolExecutor
 import pytest
 
@@ -752,7 +755,7 @@ def test_persistence_failure_fails_closed(sample_docx, monkeypatch):
     # Issue approval token must raise RuntimeError and NOT return an unpersisted token
     with pytest.raises(RuntimeError) as exc_info:
         service.issue_approval_token(cs_id)
-    assert "Transactional persistence failure" in str(exc_info.value)
+    assert any(term in str(exc_info.value) for term in ["Transactional persistence failure", "Database error querying authoritative ChangeSet"])
 
     # verify_and_consume must also raise RuntimeError and NOT silently approve
     with pytest.raises(RuntimeError) as exc_info:
@@ -869,4 +872,157 @@ def test_stale_changeset_save_rejects_concurrent_overwrite(sample_docx):
         proc1_svc._save_changeset(stale_cs)
 
     assert "Concurrent modification conflict" in str(exc_info.value)
+
+
+def test_sqlite_error_fails_closed_without_stale_json_fallback(sample_docx, monkeypatch):
+    """
+    P1 Security: When the authoritative SQLite database fails or is unavailable,
+    _get_changeset fails closed with RuntimeError. It must NEVER fall back to
+    reading unverified or potentially stale JSON files from disk.
+    """
+    service = DocumentToolService()
+    prop = service.propose_text_edit(
+        sample_docx,
+        block_id="block-003",
+        new_text="Authoritative fail closed test text.",
+    )
+    cs_id = prop["changeset_id"]
+
+    # Verify JSON file exists on disk
+    json_path = settings.STORAGE_DIR / "changesets" / f"{cs_id}.json"
+    assert json_path.exists(), "JSON mirror should exist on disk"
+
+    # Clear in-memory cache to force a persistent lookup
+    service._changesets.clear()
+    service._changeset_versions.clear()
+
+    # Simulate SQLite operational failure / lock / disk error
+    import sqlite3
+    from injester.application import document_tools as dt_mod
+
+    def _broken_db():
+        raise sqlite3.OperationalError("Simulated database lock or I/O failure")
+
+    monkeypatch.setattr(dt_mod, "_connect_token_db", _broken_db)
+
+    # Must raise RuntimeError and NOT fall back to reading json_path
+    with pytest.raises(RuntimeError) as exc_info:
+        service._get_changeset(cs_id)
+
+    assert "Database error querying authoritative ChangeSet" in str(exc_info.value)
+
+
+def test_cross_os_processes_changeset_lifecycle_integration(sample_docx, temp_output_docx):
+    """
+    P2 End-to-End Subprocess Integration:
+    Launches true, independent OS processes via sys.executable:
+    1. OS Process 1 proposes a ChangeSet and holds it in process memory (status: PROPOSED).
+    2. OS Process 2 starts independently, loads the ChangeSet from SQLite, issues an approval token,
+       and approves the ChangeSet.
+    3. OS Process 1 is notified, retrieves the ChangeSet from SQLite (invalidating its stale in-memory cache),
+       and applies the verified edit to temp_output_docx.
+    Exercises real OS process isolation, SQLite WAL multi-process access, and independent configs.
+    """
+    import textwrap
+
+    script_proc1 = textwrap.dedent("""
+        import sys
+        from injester.application.document_tools import DocumentToolService
+
+        sample_docx = sys.argv[1]
+        out_docx = sys.argv[2]
+
+        service = DocumentToolService()
+        prop = service.propose_text_edit(
+            sample_docx,
+            block_id="block-003",
+            new_text="Verified multi-OS-process transformed content.",
+        )
+        cs_id = prop["changeset_id"]
+        assert cs_id in service._changesets
+        assert service._changesets[cs_id].status == "PROPOSED"
+
+        # Signal main test that Process 1 is ready with ChangeSet cached in memory
+        print(f"READY:{cs_id}", flush=True)
+
+        # Wait for approval signal from test runner
+        line = sys.stdin.readline().strip()
+        if line != "APPLY":
+            print(f"ERROR: Expected APPLY command, got '{line}'", flush=True)
+            sys.exit(1)
+
+        # Process 1 applies the ChangeSet - must detect Process 2's approval in persistent store
+        report = service.apply_changeset(cs_id, output_path=out_docx)
+        assert report["is_successful"] is True
+        assert service._changesets[cs_id].status == "APPROVED"
+        print(f"DONE:{cs_id}", flush=True)
+        sys.exit(0)
+    """)
+
+    script_proc2 = textwrap.dedent("""
+        import sys
+        from injester.application.document_tools import DocumentToolService
+
+        cs_id = sys.argv[1]
+        service = DocumentToolService()
+
+        # Independent OS process issues token and approves
+        token = service.issue_approval_token(cs_id, approver="os_admin_process_2")
+        approved = service.approve_changeset(cs_id, approval_token=token)
+        assert approved["status"] == "APPROVED"
+        print(f"APPROVED:{cs_id}", flush=True)
+        sys.exit(0)
+    """)
+
+    env = os.environ.copy()
+    env["PYTHONPATH"] = os.getcwd()
+
+    # Launch OS Subprocess 1
+    proc1 = subprocess.Popen(
+        [sys.executable, "-u", "-c", script_proc1, sample_docx, temp_output_docx],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        env=env,
+    )
+
+    try:
+        # Read READY signal from Process 1
+        ready_line = proc1.stdout.readline().strip()
+        assert ready_line.startswith("READY:"), f"Process 1 failed to initialize: {proc1.stderr.read()}"
+        cs_id = ready_line.split(":", 1)[1]
+
+        # Launch OS Subprocess 2 to approve the ChangeSet
+        proc2_res = subprocess.run(
+            [sys.executable, "-c", script_proc2, cs_id],
+            capture_output=True,
+            text=True,
+            env=env,
+            check=True,
+        )
+        assert "APPROVED:" in proc2_res.stdout, f"Process 2 failed to approve: {proc2_res.stderr}"
+
+        # Signal OS Subprocess 1 to apply the ChangeSet
+        proc1.stdin.write("APPLY\n")
+        proc1.stdin.flush()
+
+        done_line = proc1.stdout.readline().strip()
+        assert done_line == f"DONE:{cs_id}", f"Process 1 application failed: {proc1.stderr.read()}"
+
+        proc1.wait(timeout=30)
+        assert proc1.returncode == 0
+
+        # Assert output document was compiled successfully
+        assert os.path.exists(temp_output_docx)
+        service = DocumentToolService()
+        verification = service.verify_document(sample_docx, temp_output_docx, changeset_id=cs_id)
+        assert verification["is_verified"] is True
+        assert verification["operation_correctness"] is True
+
+    finally:
+        if proc1.poll() is None:
+            proc1.kill()
+            proc1.wait()
+
 

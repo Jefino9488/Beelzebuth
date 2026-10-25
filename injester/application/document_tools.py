@@ -147,7 +147,9 @@ def _connect_token_db() -> sqlite3.Connection:
     conn.commit()
     return conn
 
-_connect_db = _connect_token_db
+def _connect_db() -> sqlite3.Connection:
+    """Wrapper delegating to _connect_token_db for workspace database operations."""
+    return _connect_token_db()
 
 
 class DocumentToolService:
@@ -248,6 +250,7 @@ class DocumentToolService:
             return None
 
         # 1. Query transactional SQLite repository for authoritative record
+        row = None
         try:
             with _connect_db() as conn:
                 cursor = conn.cursor()
@@ -260,28 +263,32 @@ class DocumentToolService:
                     (changeset_id,)
                 )
                 row = cursor.fetchone()
-                if row:
-                    db_version, db_status, payload_json, file_path, updated_at = row
-                    cached_cs = self._changesets.get(changeset_id)
-                    cached_version = self._changeset_versions.get(changeset_id)
-
-                    # If cached in memory and version matches DB, return cached instance
-                    if cached_cs is not None and cached_version == db_version:
-                        return cached_cs
-
-                    # Otherwise, DB has newer or freshly discovered state: reload authoritative ChangeSet
-                    fresh_cs = ChangeSet.model_validate_json(payload_json)
-                    self._changesets[changeset_id] = fresh_cs
-                    self._changeset_versions[changeset_id] = db_version
-                    if target.exists():
-                        self._changeset_mtimes[changeset_id] = target.stat().st_mtime
-                    if file_path or fresh_cs.file_path:
-                        self._changeset_to_session[changeset_id] = file_path or fresh_cs.file_path
-                    return fresh_cs
         except Exception as e:
-            logger.warning("Failed to query ChangeSet from SQLite database: %s", e)
+            # SECURITY P1: Fail-closed on database errors. Never fall back to unverified
+            # or stale JSON mirrors when the authoritative database encounters an operational failure.
+            raise RuntimeError(f"Database error querying authoritative ChangeSet '{changeset_id}': {e}") from e
 
-        # 2. Fallback to persisted disk JSON file (e.g. if created outside DB or DB was reinitialized)
+        if row:
+            db_version, db_status, payload_json, file_path, updated_at = row
+            cached_cs = self._changesets.get(changeset_id)
+            cached_version = self._changeset_versions.get(changeset_id)
+
+            # If cached in memory and version matches DB, return cached instance
+            if cached_cs is not None and cached_version == db_version:
+                return cached_cs
+
+            # Otherwise, DB has newer or freshly discovered state: reload authoritative ChangeSet
+            fresh_cs = ChangeSet.model_validate_json(payload_json)
+            self._changesets[changeset_id] = fresh_cs
+            self._changeset_versions[changeset_id] = db_version
+            if target.exists():
+                self._changeset_mtimes[changeset_id] = target.stat().st_mtime
+            if file_path or fresh_cs.file_path:
+                self._changeset_to_session[changeset_id] = file_path or fresh_cs.file_path
+            return fresh_cs
+
+        # 2. Safe Legacy Migration Fallback: Only reached if the database query succeeded
+        # and confirmed the record does not exist in SQLite (row is None).
         if target.exists():
             try:
                 curr_mtime = target.stat().st_mtime
