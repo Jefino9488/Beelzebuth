@@ -15,7 +15,7 @@ class DocumentExtractor:
     Normalizes all content into structured NormalizedElement objects with full provenance tracking.
     """
     def __init__(self, default_backend: Optional[str] = None):
-        self.default_backend = default_backend or os.getenv("INJESTER_EXTRACTOR_BACKEND", "auto")
+        self.default_backend = default_backend or os.getenv("INJESTER_EXTRACTOR_BACKEND", "docling")
 
     def extract(
         self,
@@ -32,12 +32,12 @@ class DocumentExtractor:
             raise FileNotFoundError(f"File not found: {path}")
 
         doc_filename = filename or path.name
-        active_backend = (backend or self.default_backend or "auto").lower()
+        active_backend = (backend or self.default_backend or "docling").lower()
 
-        # If docling is explicitly requested, attempt docling extraction
-        if active_backend == "docling":
+        # Docling is the primary extraction engine for layout and table reconstruction
+        if active_backend in ("docling", "auto"):
             try:
-                return self._extract_with_docling(
+                elements = self._extract_with_docling(
                     path=path,
                     document_id=document_id,
                     doc_filename=doc_filename,
@@ -45,8 +45,10 @@ class DocumentExtractor:
                     file_version_id=file_version_id,
                     file_hash=file_hash,
                 )
-            except Exception as e:
-                # Log warning and fall back to unstructured
+                if elements:
+                    return elements
+            except Exception:
+                # Graceful fallback to Unstructured for unsupported filetypes or failures
                 pass
 
         return self._extract_with_unstructured(

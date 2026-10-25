@@ -124,7 +124,14 @@ def doctor_cmd():
         str(settings.STORAGE_DIR),
     )
 
-    # 4. Embedding Model
+    # 4. Extraction Engine
+    table.add_row(
+        "Extraction Engine",
+        "[green]READY[/green]",
+        f"Primary: {settings.EXTRACTOR_BACKEND.title()} (TableFormer) | Fallback: Unstructured",
+    )
+
+    # 5. Embedding Model
     table.add_row(
         "Embedding Model",
         "[green]CONFIGURED[/green]",
@@ -226,6 +233,7 @@ def config_cmd(
     table.add_row("System-1 Base URL", system1["base_url"] or "(default)")
     table.add_row("System-1 API Key", "Yes" if bool(system1["api_key"]) else "No")
     table.add_row("System-1 Model", system1["model"] or "(default)")
+    table.add_row("Extraction Backend", f"{settings.EXTRACTOR_BACKEND} (Docling primary, Unstructured fallback)")
     table.add_row("Embedding Model", settings.EMBEDDING_MODEL)
 
     console.print(table)

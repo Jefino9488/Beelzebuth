@@ -63,6 +63,9 @@ class Settings:
     OPENROUTER_BASE_URL: str = os.getenv("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1")
     OPENROUTER_FREE_MODEL: str = os.getenv("OPENROUTER_FREE_MODEL", "qwen/qwen3.8-27b:free")
 
+    # Primary Document Extractor Backend ("docling" by default, with "unstructured" fallback)
+    EXTRACTOR_BACKEND: str = os.getenv("INJESTER_EXTRACTOR_BACKEND", "docling")
+
     # Embedding Model (SentenceTransformers local model)
     EMBEDDING_MODEL: str = os.getenv("EMBEDDING_MODEL", "all-MiniLM-L6-v2")
 
