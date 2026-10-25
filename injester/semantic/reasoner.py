@@ -123,17 +123,45 @@ class SemanticProcessReasoner:
     )
 
     def __init__(self, client: Optional[instructor.Instructor] = None, model_name: Optional[str] = None):
-        if client is not None:
-            self.client = client
-        else:
-            raw_client = OpenAI(
-                base_url=settings.OPENAI_BASE_URL if settings.OPENAI_BASE_URL else None,
-                api_key=settings.OPENAI_API_KEY if settings.OPENAI_API_KEY else "byoai-token",
-                timeout=getattr(settings, "LLM_TIMEOUT", 600.0),
-                max_retries=3,
-            )
-            self.client = instructor.from_openai(raw_client, mode=instructor.Mode.JSON)
-        self.model_name = model_name or settings.MODEL_NAME
+        self._explicit_client = client
+        self._explicit_model_name = model_name
+        self._cached_client_key: Optional[tuple] = None
+        self._cached_client: Optional[instructor.Instructor] = None
+
+    @property
+    def model_name(self) -> str:
+        return self._explicit_model_name or settings.MODEL_NAME
+
+    @model_name.setter
+    def model_name(self, value: Optional[str]) -> None:
+        self._explicit_model_name = value
+
+    @property
+    def client(self) -> instructor.Instructor:
+        if self._explicit_client is not None:
+            return self._explicit_client
+        key = (
+            settings.OPENAI_BASE_URL,
+            settings.OPENAI_API_KEY,
+            getattr(settings, "LLM_TIMEOUT", 600.0),
+        )
+        if self._cached_client is not None and self._cached_client_key == key:
+            return self._cached_client
+        raw_client = OpenAI(
+            base_url=settings.OPENAI_BASE_URL if settings.OPENAI_BASE_URL else None,
+            api_key=settings.OPENAI_API_KEY if settings.OPENAI_API_KEY else "byoai-token",
+            timeout=getattr(settings, "LLM_TIMEOUT", 600.0),
+            max_retries=3,
+        )
+        self._cached_client = instructor.from_openai(raw_client, mode=instructor.Mode.JSON)
+        self._cached_client_key = key
+        return self._cached_client
+
+    @client.setter
+    def client(self, value: Optional[instructor.Instructor]) -> None:
+        self._explicit_client = value
+        self._cached_client = None
+        self._cached_client_key = None
 
 
     def _detect_structural_errors(self, model: CanonicalProcessModel) -> List[str]:

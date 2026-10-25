@@ -58,6 +58,19 @@ class ModelDiscoveryRequest(BaseModel):
     free_only: bool = Field(default=False, description="When true, only return zero-cost models")
 
 
+class ValidateCredentialsRequest(BaseModel):
+    provider: Optional[str] = Field(default="openai_compatible", description="Provider type (openrouter, openai_compatible, ollama, lightning)")
+    base_url: Optional[str] = Field(default=None, description="Provider base URL")
+    api_key: Optional[str] = Field(default=None, description="API key")
+
+
+class ValidateCredentialsResponse(BaseModel):
+    valid: bool
+    status: str
+    message: str
+    model_count: Optional[int] = None
+
+
 class ModelDescriptor(BaseModel):
     id: str
     name: str
@@ -87,23 +100,7 @@ def mask_key(k: Optional[str]) -> str:
 def persist_settings_to_disk():
     """Persists current BYOAI configuration to workspace config.env."""
     try:
-        cfg_file = settings.WORKSPACE_DIR / "config.env"
-        lines = [
-            f"OPENAI_BASE_URL={settings.OPENAI_BASE_URL}\n",
-            f"OPENAI_API_KEY={settings.OPENAI_API_KEY}\n",
-            f"MODEL_NAME={settings.MODEL_NAME}\n",
-        ]
-        if settings.GEMINI_API_KEY:
-            lines.append(f"GEMINI_API_KEY={settings.GEMINI_API_KEY}\n")
-        lines.append(f"SYSTEM1_PROVIDER={settings.SYSTEM1_PROVIDER}\n")
-        lines.append(f"SYSTEM1_API_MODE={settings.SYSTEM1_API_MODE}\n")
-        if settings.SYSTEM1_API_BASE_URL:
-            lines.append(f"SYSTEM1_API_BASE_URL={settings.SYSTEM1_API_BASE_URL}\n")
-        if settings.SYSTEM1_API_KEY:
-            lines.append(f"SYSTEM1_API_KEY={settings.SYSTEM1_API_KEY}\n")
-        if settings.SYSTEM1_MODEL:
-            lines.append(f"SYSTEM1_MODEL={settings.SYSTEM1_MODEL}\n")
-        cfg_file.write_text("".join(lines), encoding="utf-8")
+        settings.persist_to_disk()
     except Exception:
         # Non-fatal: configuration remains applied in-memory
         pass
@@ -297,3 +294,19 @@ def discover_models(
         raise HTTPException(status_code=502, detail=str(exc))
 
     return ModelCatalogResponse(**catalog)
+
+
+@router.post("/validate", response_model=ValidateCredentialsResponse, dependencies=[Depends(require_super_admin)])
+def validate_provider(
+    req: ValidateCredentialsRequest,
+    sec_ctx: SecurityContext = Depends(get_current_sec_ctx),
+):
+    """Validates connectivity and credentials for an LLM provider endpoint."""
+    res = settings.validate_credentials(
+        provider=req.provider,
+        base_url=req.base_url,
+        api_key=req.api_key,
+    )
+    if not res["valid"]:
+        raise HTTPException(status_code=400, detail=res["message"])
+    return ValidateCredentialsResponse(**res)

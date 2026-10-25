@@ -284,27 +284,175 @@ class Settings:
                     "Use separate, dedicated cryptographic secrets for token authentication and document change approvals."
                 )
 
-    def update_llm_settings(self, base_url: str, api_key: str, model_name: str) -> None:
+    def update_llm_settings(self, base_url: str, api_key: str, model_name: str, persist: bool = False) -> None:
         """Dynamically update LLM BYOAI settings without code changes."""
         self.OPENAI_BASE_URL = base_url.strip()
         self.OPENAI_API_KEY = api_key.strip()
         self.MODEL_NAME = model_name.strip()
+        if persist:
+            self.persist_to_disk()
+        try:
+            from injester.application.manager import manager
+            manager.reset_pipeline()
+        except Exception:
+            pass
 
-    def switch_to_lightning(self) -> None:
+    def switch_to_lightning(self, persist: bool = False) -> None:
         """Switch active configuration to Lightning AI with Gemini 2.5 Flash-Lite."""
         self.update_llm_settings(
             base_url=self.LIGHTNING_BASE_URL,
             api_key=self.LIGHTNING_API_KEY,
-            model_name=self.LIGHTNING_MODEL
+            model_name=self.LIGHTNING_MODEL,
+            persist=persist,
         )
 
-    def switch_to_openrouter_free(self) -> None:
+    def switch_to_openrouter_free(self, persist: bool = False) -> None:
         """Switch active configuration to OpenRouter using free models."""
         self.update_llm_settings(
             base_url=self.OPENROUTER_BASE_URL,
             api_key=self.OPENROUTER_API_KEY,
-            model_name=self.OPENROUTER_FREE_MODEL
+            model_name=self.OPENROUTER_FREE_MODEL,
+            persist=persist,
         )
+
+    def persist_to_disk(self, target_file: Optional[Path] = None) -> Path:
+        """
+        Persists active LLM BYOAI, System-1, and security configuration to config.env on disk.
+        Defaults to WORKSPACE_DIR / 'config.env'.
+        """
+        cfg_file = target_file or (self.WORKSPACE_DIR / "config.env")
+        cfg_file.parent.mkdir(parents=True, exist_ok=True)
+        lines = [
+            f"OPENAI_BASE_URL={self.OPENAI_BASE_URL}\n",
+            f"OPENAI_API_KEY={self.OPENAI_API_KEY}\n",
+            f"MODEL_NAME={self.MODEL_NAME}\n",
+        ]
+        if self.GEMINI_API_KEY:
+            lines.append(f"GEMINI_API_KEY={self.GEMINI_API_KEY}\n")
+        if self.LIGHTNING_API_KEY:
+            lines.append(f"LIGHTNING_API_KEY={self.LIGHTNING_API_KEY}\n")
+        if self.OPENROUTER_API_KEY:
+            lines.append(f"OPENROUTER_API_KEY={self.OPENROUTER_API_KEY}\n")
+        lines.append(f"SYSTEM1_PROVIDER={self.SYSTEM1_PROVIDER}\n")
+        lines.append(f"SYSTEM1_API_MODE={self.SYSTEM1_API_MODE}\n")
+        if self.SYSTEM1_API_BASE_URL:
+            lines.append(f"SYSTEM1_API_BASE_URL={self.SYSTEM1_API_BASE_URL}\n")
+        if self.SYSTEM1_API_KEY:
+            lines.append(f"SYSTEM1_API_KEY={self.SYSTEM1_API_KEY}\n")
+        if self.SYSTEM1_MODEL:
+            lines.append(f"SYSTEM1_MODEL={self.SYSTEM1_MODEL}\n")
+        if self.APPROVAL_SIGNING_KEY:
+            lines.append(f"APPROVAL_SIGNING_KEY={self.APPROVAL_SIGNING_KEY}\n")
+        if hasattr(self, "APPROVAL_MODE"):
+            lines.append(f"APPROVAL_MODE={self.APPROVAL_MODE}\n")
+        if hasattr(self, "ALLOW_UNATTENDED_MCP_APPROVAL"):
+            lines.append(f"ALLOW_UNATTENDED_MCP_APPROVAL={str(self.ALLOW_UNATTENDED_MCP_APPROVAL).lower()}\n")
+        if hasattr(self, "ALLOWED_DOCUMENT_ROOTS") and self.ALLOWED_DOCUMENT_ROOTS:
+            lines.append(f"ALLOWED_DOCUMENT_ROOTS={self.ALLOWED_DOCUMENT_ROOTS}\n")
+
+        cfg_file.write_text("".join(lines), encoding="utf-8")
+        return cfg_file
+
+    def reload_from_disk(self, source_file: Optional[Path] = None) -> None:
+        """Reloads settings from workspace config.env (or provided path) if it exists."""
+        env_file = source_file or (self.WORKSPACE_DIR / "config.env")
+        if env_file.exists():
+            load_dotenv(env_file, override=True)
+            if os.getenv("OPENAI_BASE_URL") is not None:
+                self.OPENAI_BASE_URL = os.getenv("OPENAI_BASE_URL")
+            if os.getenv("OPENAI_API_KEY") is not None:
+                self.OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+            if os.getenv("MODEL_NAME") is not None:
+                self.MODEL_NAME = os.getenv("MODEL_NAME")
+            if os.getenv("GEMINI_API_KEY") is not None:
+                self.GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+            if os.getenv("LIGHTNING_API_KEY") is not None:
+                self.LIGHTNING_API_KEY = os.getenv("LIGHTNING_API_KEY")
+            if os.getenv("OPENROUTER_API_KEY") is not None:
+                self.OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
+            if os.getenv("SYSTEM1_PROVIDER") is not None:
+                self.SYSTEM1_PROVIDER = os.getenv("SYSTEM1_PROVIDER")
+            if os.getenv("SYSTEM1_API_MODE") is not None:
+                self.SYSTEM1_API_MODE = os.getenv("SYSTEM1_API_MODE")
+            if os.getenv("SYSTEM1_API_BASE_URL") is not None:
+                self.SYSTEM1_API_BASE_URL = os.getenv("SYSTEM1_API_BASE_URL")
+            if os.getenv("SYSTEM1_API_KEY") is not None:
+                self.SYSTEM1_API_KEY = os.getenv("SYSTEM1_API_KEY")
+            if os.getenv("SYSTEM1_MODEL") is not None:
+                self.SYSTEM1_MODEL = os.getenv("SYSTEM1_MODEL")
+            if os.getenv("APPROVAL_SIGNING_KEY") is not None:
+                self.APPROVAL_SIGNING_KEY = os.getenv("APPROVAL_SIGNING_KEY")
+            if os.getenv("APPROVAL_MODE") is not None:
+                self.APPROVAL_MODE = os.getenv("APPROVAL_MODE")
+            if os.getenv("ALLOW_UNATTENDED_MCP_APPROVAL") is not None:
+                self.ALLOW_UNATTENDED_MCP_APPROVAL = os.getenv("ALLOW_UNATTENDED_MCP_APPROVAL", "").lower() in ("true", "1")
+            if os.getenv("ALLOWED_DOCUMENT_ROOTS") is not None:
+                self.ALLOWED_DOCUMENT_ROOTS = os.getenv("ALLOWED_DOCUMENT_ROOTS")
+
+    def validate_credentials(
+        self,
+        provider: Optional[str] = None,
+        base_url: Optional[str] = None,
+        api_key: Optional[str] = None,
+        timeout: float = 10.0,
+    ) -> dict:
+        """
+        Validates connectivity and credentials against the specified or currently configured LLM provider.
+        Returns a dict with {"valid": bool, "status": str, "message": str, "model_count": Optional[int]}.
+        """
+        from injester.providers.model_catalog import fetch_models, ModelCatalogError
+
+        target_provider = (provider or "openai_compatible").strip().lower()
+        if base_url is not None:
+            target_base_url = base_url.strip()
+        else:
+            target_base_url = (self.OPENAI_BASE_URL or "").strip()
+
+        if api_key is not None:
+            target_api_key = api_key.strip()
+        else:
+            target_api_key = (self.OPENAI_API_KEY or "").strip()
+
+        if target_provider == "openrouter" and not target_base_url and base_url is None:
+            target_base_url = self.OPENROUTER_BASE_URL or "https://openrouter.ai/api/v1"
+            if api_key is None and not target_api_key:
+                target_api_key = self.OPENROUTER_API_KEY
+
+        if not target_base_url:
+            return {
+                "valid": False,
+                "status": "error",
+                "message": "Base URL is required to validate provider credentials.",
+                "model_count": None,
+            }
+
+        try:
+            models = fetch_models(
+                provider=target_provider,
+                base_url=target_base_url,
+                api_key=target_api_key,
+                timeout=timeout,
+            )
+            return {
+                "valid": True,
+                "status": "ok",
+                "message": f"Successfully authenticated and discovered {len(models)} models.",
+                "model_count": len(models),
+            }
+        except ModelCatalogError as exc:
+            return {
+                "valid": False,
+                "status": "error",
+                "message": str(exc),
+                "model_count": None,
+            }
+        except Exception as exc:
+            return {
+                "valid": False,
+                "status": "error",
+                "message": f"Connection error: {exc}",
+                "model_count": None,
+            }
 
     def system1_effective_config(self) -> dict:
         """
@@ -361,6 +509,11 @@ class Settings:
             self.SYSTEM1_API_KEY = api_key.strip()
         if model is not None:
             self.SYSTEM1_MODEL = model.strip()
+        try:
+            from injester.application.manager import manager
+            manager.reset_pipeline()
+        except Exception:
+            pass
 
 settings = Settings()
 settings.APPROVAL_SIGNING_KEY = settings.get_or_create_approval_signing_key()

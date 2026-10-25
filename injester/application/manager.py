@@ -74,6 +74,15 @@ class ServiceManager:
     def sec_ctx(self) -> SecurityContext:
         return LOCAL_SEC_CTX
 
+    def reset_pipeline(self) -> None:
+        """Resets the cached pipeline and session so updated settings take effect immediately."""
+        if self._pipeline:
+            self._pipeline.close()
+            self._pipeline = None
+        if self._session:
+            self._session.close()
+            self._session = None
+
     def close(self) -> None:
         if self._pipeline:
             self._pipeline.close()
