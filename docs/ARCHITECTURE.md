@@ -1,234 +1,253 @@
-# Beelzebuth (Injester Community) — Full System Architecture
+# Beelzebuth — High-Level Architecture & Open-Source Stack (Locked Specification)
 
-This document provides a comprehensive technical breakdown of the architecture powering **Beelzebuth** (Injester Community). 
-
-The primary mission of the core engine is:
-> **Universal Open-Source Document Digitizer**: Devour any incoming document format (`.pdf`, `.docx`, `.txt`, `.md`, images) into an authoritative, editable, and high-fidelity digital **Markdown (`.md`)** document, preserving 100% of the original context, tables, diagrams/figures, and attributing every claim with granular inline citations `[S###]` anchored to an auditable Citation & Source Provenance Index.
+> **Source-Preserving Document Intelligence Engine with a Separate Semantic Process Graph, Visual Editing Layer, and Format-Specific Recompilers.**
 
 ---
 
-## 1. High-Level System Architecture
+## 1. Executive Architecture Overview
+
+Beelzebuth combines mature open-source tools with one proprietary, tightly engineered core: **the Canonical Document Model (CDM) and the bidirectional mapping between visual edits and the original document package.**
 
 ```mermaid
 flowchart TD
-    subgraph ClientInterfaces ["Unified Interfaces (100% Shared Core)"]
-        CLI["Injester CLI\n(typer + rich)"]
-        WebUI["Local Web Workbench\n(React 19 + Tailwind + Vite)"]
-        MCP["MCP Server\n(JSON-RPC stdio)"]
+    OrigDoc["Original Document\n(Resume · SOP · Contract · Report · Research Paper)\n+ Immutable Version Hash"] --> IngestionRouter["Format Detection &\nIngestion Router"]
+    IngestionRouter --> ExtAdapters["Extraction Adapters\n(Docling Primary / Unstructured Fallback)"]
+    
+    subgraph CDM_Layer ["Canonical Document Model Layer (Single Source of Truth)"]
+        ModelA["Model A: Document IR\n(Headings, Paragraphs, Tables, Styles, Coordinates)\nDocumentType detected at extraction time"]
+        ModelB["Model B: Semantic Process Graph\n(Steps, Decisions, Dependencies, Actors, Roles)"]
+        ProvIndex["Source & Provenance Index\n(Stable Span IDs S001..., Page/BBox Anchors)"]
+        
+        ModelA <--> ProvIndex
+        ModelB <--> ProvIndex
+        ModelB -.->|Maps to supporting blocks| ModelA
+    end
+    
+    ExtAdapters --> ModelA
+    ExtAdapters --> ProvIndex
+    ModelA & ProvIndex --> SemanticAnalyzer["Semantic Analyzer\n(Procedures, Dependencies, Evidence Strength)"]
+    SemanticAnalyzer --> ModelB
+
+    subgraph VisualLayer ["Visual Editing Workspace (Phased Roadmap)"]
+        RF["React Flow Canvas\n(Phase 1.5 - In Development)"]
+        ELK["ELK.js Layout\n(Phase 1.5 - Planned)"]
+        Cyto["Cytoscape.js\n(Phase 4 - Planned Knowledge Map)"]
+        BPMN["bpmn-js\n(Phase 4 - Planned BPMN 2.0)"]
+        TipTap["Tiptap / ProseMirror\n(Phase 4 - Planned Rich Text)"]
+        PDFView["PDF.js\n(Phase 2 - Planned Passage Nav)"]
     end
 
-    subgraph ServiceLayer ["Application Service Layer (injester/application)"]
-        Mgr["WorkspaceManager\n(Advisory lock, SQLite bootstrap)"]
-        DocService["DocumentService\n(Ingest, List, Version Lineage)"]
-        DigitizerService["High-Fidelity Digitizer\n(reconstruct_digital_markdown)"]
-        RetService["RetrievalService\n(FAISS Hybrid Search)"]
-        GraphService["ProcessGraphService\n(Diagram & AST Projections)"]
+    ModelB --> RF & Cyto & BPMN
+    ModelA --> TipTap & PDFView
+
+    subgraph DecisionLayer ["Decision-Making Engines (Separation of Concerns)"]
+        UserReq["User Request / Intent\n(Drag-and-drop or prompt)"]
+        OpenJev["OpenJev (Fast Path)\n• Request Classification\n• Structured Action Routing\n• Section Moves & Known Edits"]
+        Laya["Laya (Semantic Analysis)\n• Semantic Entailment & Factuality\n• Meaning & Intent Preservation\n• Evidence Grounding Scoring"]
+        
+        UserReq --> OpenJev
+        OpenJev -->|Structured Action| EditCmds["Typed Change Commands\n(MOVE_PROCEDURE_STEP, REORDER_SECTION, ...)"]
+        OpenJev -->|Semantic Rewrite Needed| Laya
+        Laya -->|Evaluated & Scored Proposal| EditCmds
     end
 
-    subgraph CoreEngine ["Beelzebuth Processing Pipeline"]
-        subgraph Stage1 ["Stage 1: Partitioning & Normalization"]
-            DocExt["DocumentExtractor\n(unstructured partition)"]
-            TableParser["BeautifulSoup Table Parser\n(HTML -> GFM Tables)"]
-            DiagramDetector["Visual Callout Formatter\n(Figures & Charts)"]
-        end
+    VisualLayer --> UserReq
 
-        subgraph Stage2 ["Stage 2: Evidence Grounding"]
-            Chunker["HierarchicalChunker\n(Section hierarchies)"]
-            SpanReg["GranularSpanRegistry\n(Atomic sentence spans S001...)"]
-        end
-
-        subgraph Stage3 ["Stage 3: Reconstruction & Projections"]
-            Reconstructor["Digital Markdown Reconstructor\n(Inline [S###] + Citation Index)"]
-            DiagSynthesizer["Structural Diagram Synthesizer\n(Mermaid & ReactFlow nodes/edges)"]
-            ProcEngine["Procedural NLI AST Reasoner\n(Optional on-demand: System-1 Verifier)"]
-        end
+    subgraph ControlEngine ["Deterministic Change Engine (Authority & Validation)"]
+        EditCmds --> TargetResolver["Target Resolver &\nVersion Check"]
+        TargetResolver --> DepChecker["Structural Rules &\nDependency Checker"]
+        DepChecker --> ApprovalGate["Approval Gate\n(ChangeSet must be APPROVED\nbefore any document mutation)"]
     end
 
-    subgraph LocalStorage ["Local-First Workspace (~/.injester or ./storage)"]
-        SQLite[("SQLite Database\n(injester.db)")]
-        FAISS[("FAISS Vector Index\n(chunks.index + chunks.json)")]
-        DocRepo["Original Documents\n& Generated Artifacts"]
-    end
+    ApprovalGate -->|Approved| Writers["Format-Specific Writers\n(DOCX / XLSX / PPTX / HTML / PDF)"]
+    DepChecker -.->|Conflict / Review Needed| Repair["Review & Repair Panel\n(Defect / Ambiguity Register)"]
+    Repair -.-> VisualLayer
 
-    CLI --> ServiceLayer
-    WebUI -->|FastAPI REST /api/v1| ServiceLayer
-    MCP --> ServiceLayer
-
-    ServiceLayer --> CoreEngine
-    CoreEngine --> LocalStorage
+    Writers --> RTVerify["Round-Trip Verification Engine\n(Reopen result & verify intended changes)"]
+    RTVerify --> OutputDoc["Updated File\n+ Change Provenance Report"]
 ```
 
 ---
 
-## 2. The Three Unified Interfaces
+## 2. Core Subsystems
 
-All three interfaces call the exact same underlying application service layer, preventing code fragmentation or inconsistent behavior:
+### A. Ingestion and Extraction
+- **Format Detection & Ingestion Router**: Detects file format, computes cryptographic SHA-256 hash, and archives the immutable original artifact.
+- **Specialized Adapters**:
+  - **Docling (Primary)**: IBM Docling extracts structured `DoclingDocument` with layout analysis, TableFormer deep learning table recognition, reading order, and bounding boxes.
+  - **Unstructured (Alternative)**: Fast heuristic partitioning for heterogeneous documents.
+  - **PaddleOCR / PP-Structure (Specialist)**: Reserved for scanned documents, degraded scans, and deep OCR.
+- **Automatic DocumentType Detection**: At extraction time, `detect_document_type()` classifies the document into one of six categories:
+  - `MANUAL`: SOPs, technical manuals, installation guides (activates procedural step extraction).
+  - `RESUME`: CV / Resumes (activates section reordering and experience bullet editing).
+  - `CONTRACT`: Legal agreements, NDAs (activates clause and obligation overlays).
+  - `RESEARCH_PAPER`: Academic papers (activates citation and equation overlays).
+  - `REPORT`: Business proposals, executive summaries.
+  - `GENERIC`: All other structured documents (activates procedural step extraction by default).
 
-```mermaid
-graph LR
-    subgraph Interfaces
-        I1["CLI (injester)"]
-        I2["Web UI (React SPA)"]
-        I3["MCP Server (stdio)"]
-    end
+### B. Canonical Document Model (CDM): The Two-Model Architecture
+Beelzebuth rejects the naive approach of using one giant graph. It enforces a strict separation between what is physically in the source and the semantic meaning derived from it:
 
-    subgraph Core ["Shared Engine Core"]
-        S["injester/application services"]
-    end
-
-    subgraph Data ["Local Storage"]
-        D["SQLite + FAISS + Files"]
-    end
-
-    I1 --> S
-    I2 --> S
-    I3 --> S
-    S --> D
+```
+┌────────────────────────────────────────────────────────────────────────────────────────┐
+│                        CANONICAL DOCUMENT MODEL (CDM)                                  │
+├───────────────────────────────────────────┬────────────────────────────────────────────┤
+│         MODEL A — DOCUMENT IR             │       MODEL B — SEMANTIC PROCESS GRAPH     │
+│   (Faithful Structural Source Representation)│    (Interpreted Procedures & Relations)     │
+├───────────────────────────────────────────┼────────────────────────────────────────────┤
+│ • Headings, Paragraphs, Lists, Tables     │ • Procedures, Steps, Gateways, Decisions   │
+│ • Stable internal block IDs (block-001...) │ • Actors, Tools, Preconditions, Outputs    │
+│ • DocumentType classification             │ • Directed dependency edges (DEPENDS_ON)   │
+│ • Formatting metadata (styles, runs, XML) │ • Links each node to >= 1 source blocks    │
+│ • Physical source anchors (page, bbox)    │ • Retains inference confidence & evidence  │
+│ • Extended block types: FIGURE_CAPTION,   │ • procedure_parent_block_id scope          │
+│   CITATION, EQUATION, CLAUSE              │   enforcement prevents cross-section moves │
+└───────────────────────────────────────────┴────────────────────────────────────────────┘
 ```
 
-| Interface | Technology | Primary Functionality |
+**Why Both Models Are Essential:**
+- A single procedural step (e.g. *“Configure RAID 10 Array”*) may be supported by a paragraph on page 12, a specifications table on page 14, and a critical warning on page 18.
+- Conversely, a single dense paragraph may contain three sequential procedural actions.
+- Model A preserves document identity and layout formatting; Model B provides an editable visual projection of meaning.
+
+---
+
+## 3. Decision-Making Engines: Separation of Responsibilities
+
+A key design principle in Beelzebuth is **specialized roles for decision-making models** rather than expecting one model to do everything.
+
+```
+┌────────────────────────────────────────────────────────────────────────────────────────┐
+│                                 DECISION-MAKING MATRIX                                 │
+├───────────────────┬─────────────────────────────────────┬──────────────────────────────┤
+│ COMPONENT         │ CORE RESPONSIBILITY                 │ WHAT IT DOES NOT DO          │
+├───────────────────┼─────────────────────────────────────┼──────────────────────────────┤
+│ **OpenJev**       │ **Fast Path**: Request classification│ Does NOT evaluate complex    │
+│ (AlexWortega)     │ and rapid routing to supported      │ semantic entailment or       │
+│                   │ structured actions (e.g. section    │ factual nuance; never edits  │
+│                   │ moves, known typed commands).       │ document binaries.           │
+├───────────────────┼─────────────────────────────────────┼──────────────────────────────┤
+│ **Laya**          │ **Semantic Analysis**: Evaluates    │ Is NOT a general-purpose     │
+│ (convaiinnovations)│ meaning preservation, intent, and  │ planner; does NOT authorize  │
+│                   │ factual support against cited spans.│ destructive document edits.  │
+├───────────────────┼─────────────────────────────────────┼──────────────────────────────┤
+│ **Change Engine** │ **Deterministic Authority**: Target  │ Does NOT guess user intent;  │
+│ (Deterministic)   │ resolution, version checking,       │ executes verified, approved  │
+│                   │ structural rules, approval gate,    │ commands deterministically.  │
+│                   │ OOXML AST mutation, & verification. │                              │
+└───────────────────┴─────────────────────────────────────┴──────────────────────────────┘
+```
+
+### 1. OpenJev: The Fast Path Router
+- **Role**: Quick intent classification and dispatch to structured actions.
+- **When Activated**: Every incoming user prompt or visual action.
+- **Capabilities**:
+  - Classifies whether a user request corresponds to a supported structural operation (e.g., *"Move skills above education"* ➔ `REORDER_SECTION`, *"Swap Step 1 and Step 2"* ➔ `MOVE_PROCEDURE_STEP`).
+  - Emits candidate `TypedChangeCommand` structures for supported operations.
+  - If the request requires generative semantic rewriting (e.g., *"Rewrite my work history to emphasize Kubernetes"*), OpenJev routes the request to the generative path and flags it for Laya semantic analysis.
+
+#### OpenJev Schema Mapping (Candidate)
+```json
+{
+  "request_intent": "STRUCTURED_REORDER | CONTENT_UPDATE | SEMANTIC_REWRITE | AMBIGUOUS",
+  "target_operation": "REORDER_SECTION | MOVE_PROCEDURE_STEP | EDIT_PARAGRAPH_TEXT",
+  "target_identifiers": {
+    "source_entity": "skills_section",
+    "anchor_entity": "education_section",
+    "position": "BEFORE"
+  },
+  "confidence": 0.94,
+  "requires_semantic_analysis": false
+}
+```
+
+### 2. Laya: The Semantic Analysis Engine
+- **Role**: Non-autoregressive factual consistency and entailment assessment.
+- **When Activated**: When content has been rewritten, modified, or generated by an AI model.
+- **Capabilities**:
+  - Evaluates whether rewritten text preserves the facts asserted in the original document spans.
+  - Checks actor grounding, action entailment, modality preservation (e.g., ensuring a "mandatory" step wasn't weakened to "optional"), and epistemic status.
+  - Assigns an Evidence Strength rating: `STRONG`, `MODERATE`, `WEAK`, or `NONE`.
+  - Flags unsupported factual additions for quarantine in the Defect / Ambiguity Register.
+
+#### Laya Schema Mapping
+```json
+{
+  "state": {
+    "claim": "Rewritten experience bullet or updated procedure instruction",
+    "evidence": "Original source span text [S012...]",
+    "actor": "Software Engineer / System Admin",
+    "action": "Deploy Kubernetes clusters"
+  },
+  "verdict": {
+    "action_entailed": 0.96,
+    "actor_grounded": 0.92,
+    "modality_preserved": "mandatory",
+    "epistemic_status": "confirmed",
+    "evidence_strength": "STRONG",
+    "unsupported_additions": []
+  }
+}
+```
+
+### 3. The Change Engine: Deterministic Control & Verification
+Neither OpenJev nor Laya directly edits files. The **Change Engine owns the document boundary**:
+1. **Target Resolution**: Maps logical identifiers (e.g., `"skills"`, `"step-02"`) to physical `DocumentBlock` entries in `DocumentIR`.
+2. **Version Checking**: Verifies `expected_document_version` matches the active session.
+3. **Structural Validation**: Checks procedure scope (`step_parent_map`), dependency cycles, and unsupported OOXML structures.
+4. **Approval Gate**: Requires explicit status `APPROVED` before any recompilation.
+5. **Surgical Mutation**: Patches targeted XML nodes via `DocxPackagePatcher`.
+6. **Round-Trip Verification**: Re-extracts the output file to guarantee one-to-one block reconciliation (`matched_reopened_ids`).
+
+---
+
+## 4. Multi-Document Support: Beyond Process & SOP Workflows
+
+Beelzebuth is a **general-purpose document transformation engine**, not merely an SOP editor. Documents of different types are represented through their native structures:
+
+| Document Type | Native Structural Unit | Primary Fast-Path Action (OpenJev) | Primary Semantic Check (Laya) | Recompiler Target |
+| :--- | :--- | :--- | :--- | :--- |
+| **Resume / CV** | Sections, Experience bullets, Skills entries | `REORDER_SECTION` (e.g. Skills before Education) | Factual consistency of rewritten experience bullets | DOCX (preserves template formatting & margins) |
+| **SOP / Manual** | Procedures, Grounded Steps, Warnings | `MOVE_PROCEDURE_STEP` (reorder steps) | Action entailment, prerequisite & safety preservation | DOCX (preserves numbered lists & styles) |
+| **Contract** | Clauses, Obligations, Definitions | `REORDER_SECTION`, `UPDATE_CLAUSE` | Obligation modality preservation (`mandatory` vs `permissive`) | DOCX / PDF Reconstruction |
+| **Business Report** | Chapters, Executive Summary, Tables | `REORDER_SECTION`, `EDIT_PARAGRAPH_TEXT` | Claim evidence grounding from appendix data | DOCX / HTML |
+| **Research Paper** | Abstract, Methodology, Citations, Equations | `REORDER_SECTION`, `UPDATE_CITATION` | Citation grounding & claim entailment | DOCX / Pandoc / PDF |
+
+---
+
+## 5. Visual Projections and Editors
+
+Visual projections share canonical document and semantic IDs across domain-appropriate visual views. Components are phased across releases to prioritize foundational correctness:
+
+| Component | Technology | Target Phase | Status | Purpose & Capabilities |
+| :--- | :--- | :--- | :--- | :--- |
+| **Workflow Studio Canvas** | React Flow (`@xyflow/react`) | Phase 1.5 | **In Development** | Interactive step graph canvas rendering procedural nodes and transitions from Process Graph AST. |
+| **Graph Auto-Layout** | ELK.js (`elkjs`) | Phase 1.5 | **Planned** | Automatic layered graph layout and edge routing to eliminate visual crossings in complex workflows. |
+| **Embedded PDF Viewer** | PDF.js (`pdfjs-dist`) | Phase 2 | **Planned** | In-browser PDF navigation jumping directly to supporting source page and passage coordinates. |
+| **Knowledge Map** | Cytoscape.js | Phase 4 | **Planned** | Cross-document relationship exploration (roles, warnings, prerequisites, system constraints). |
+| **Formal BPMN Modeler** | bpmn-js | Phase 4 | **Planned** | Formal BPMN 2.0 XML visual modeling and export for strict enterprise workflow compliance. |
+| **Source-Linked Rich Text** | Tiptap / ProseMirror | Phase 4 | **Planned** | Structured rich-text block editing with live citation badges and transactional mutation history. |
+
+---
+
+## 6. How Format-Specific Recompilation Works
+
+| Format | Recompilation Approach | Guarantees & Constraints |
 | :--- | :--- | :--- |
-| **CLI (`injester`)** | Python Typer + Rich | Instant terminal devouring (`injester md generate -f doc.pdf -o doc.md`), workspace initialization (`injester init`), diagnostics (`injester doctor`), vector search (`injester search`), and starting local servers (`injester web`, `injester mcp`). |
-| **Web Workbench** | React 19, Vite, Tailwind CSS, XYFlow, Lucide Icons | Dual-pane visual workbench: left pane displays immutable document evidence with highlight tracking; right pane features the **Digital Markdown (.md)** editor/viewer, interactive diagram visualizers, LLM context, and schema viewer. |
-| **MCP Server** | Official Python MCP SDK (`stdio`) | Exposes tools (`list_documents`, `ingest_document`, `search_evidence`, `generate_digest`, `generate_diagram`) to AI desktop clients like Claude Desktop, Cursor, and Windsurf. |
+| **DOCX** | Patch the Office Open XML package using `zipfile` + targeted `lxml` surgery. Source file is re-hashed immediately before mutation to detect concurrent modification. | **Style-Preserving Same-Format Editing**. Untouched paragraphs, styles, headers, footers, and margins remain identical. One-to-one block matching ensures no dropped blocks. |
+| **XLSX** | Modify workbook with `openpyxl`. | Preserves formulas, cell styles, sheet names, and workbook metadata. |
+| **PPTX** | Edit slides and shapes with `python-pptx`. | Preserves slide layouts, themes, and master slides. |
+| **HTML** | Mutate DOM tree using BeautifulSoup / lxml. | Retains classes, attributes, links, and structure. |
+| **PDF** | Constrained in-place updates or clean reconstruction. | PDFs are fixed-layout print artifacts; Beelzebuth provides a defined **reconstruction mode** rather than claiming impossible lossless PDF patching. |
 
 ---
 
-## 3. Core Processing Pipeline Deep Dive
+## 7. Architectural Invariants
 
-### Tier 1: Ingestion & Dual-Backend Partitioning
-- **Location**: `injester/ingestion/extractor.py`
-- **Supported Formats**: PDF, DOCX, XLSX, CSV, TXT, Markdown, PPTX, HTML, Images.
-- **Pluggable Extraction Engines**:
-  1. **Unstructured (Default)**: Fast, deterministic document partitioning (`strategy="auto"` or `strategy="hi_res"` with `skip_infer_table_types=[]` to preserve HTML table layouts).
-  2. **Docling (Deep Learning)**: Powered by IBM's `docling` with `TableFormer` deep learning table structure recognition and native Markdown generation for complex multi-page tables and merged cells.
-- **Metadata Capture**: Normalizes document structures into `NormalizedElement` instances, recording:
-  - Element type (`Title`, `Header`, `NarrativeText`, `ListItem`, `Table`, `FigureCaption`).
-  - Section path hierarchy (`['Section 1', 'Sub-clause 1.2']`).
-  - Page coordinates and page numbers.
-  - Raw HTML representation for tables (`metadata.text_as_html`).
-  - Associated figure or image paths (`metadata.image_path`).
-
-### Tier 2: Granular Span Registry & Grounding
-- **Location**: `injester/synthesis/spans.py` & `injester/semantic/pipeline.py`
-- **Segmentation**: Granular sentence-level splitting using regex lookarounds that preserve numbering, procedural steps, and sub-bullets (`(?<=[.?!;:])\s+(?=(?:step\s+\d+|\d+[\.)]|[a-zA-Z][\.)]|[•\-*])\s+)`).
-- **Immutable Span IDs**: Every atomic unit of source text receives a deterministic identifier: `S001`, `S002`, `S003`...
-- **Cryptographic Lineage**: Generates a SHA-256 hash manifest representing the span registry snapshot to guarantee zero synthetic drift between the original file and synthesized outputs.
-
-### Tier 3: High-Fidelity Digitizer
-- **Location**: `injester/application/digitizer.py`
-- Recreates the document structure deterministically in **< 1.5 seconds**:
-  1. **HTML Table to GFM Parsing**:
-     - Utilizes `BeautifulSoup` to parse `metadata.text_as_html` trees produced by Unstructured layout analysis (`skip_infer_table_types=[]`).
-     - Extracts headers and rows, measures column widths, escapes pipe characters, and outputs aligned GitHub-Flavored Markdown tables:
-       ```markdown
-       | Column A | Column B | Column C |
-       | :--- | :--- | :--- |
-       | Value 1 | Value 2 | Value 3 |
-       ```
-  2. **Visual Asset & Figure Preservation**:
-     - Accurately captures figures and pictures from layout elements as clean visual callouts (`> 📊 **Figure**: *<caption/name>*`) without brittle regex flow hallucination.
-     - Flowchart and diagram synthesis is reserved for the on-demand diagram studio and BPMN/Mermaid projections.
-  3. **Inline Citation Tagging**:
-     - Appends `[S###]` badges to each sentence corresponding to its registered evidence span.
-  4. **Auditable Citation Index**:
-     - Renders a clean Markdown table at the end of the document:
-       ```markdown
-       ## Citation & Source Provenance Index
-       | Citation | Page / Location | Section Path | Source Excerpt |
-       | :--- | :--- | :--- | :--- |
-       | `[S001]` | Page 1 | Security Protocol | *"All access requests require dual sign-off."* |
-       ```
-
-### Tier 4: Diagram & AST Projection Engine
-- **Location**: `injester/application/digitizer.py` & `injester/semantic/projections.py`
-- **Fast Structural Diagrams**: Synthesizes Mermaid flowcharts and ReactFlow node/edge graphs directly from document headings and sections without requiring slow LLM calls.
-- **On-Demand Procedural AST**: When formal workflow compilation is requested:
-  - System-1 NLI checks candidate claims against source spans.
-  - Validated steps compile into `GroundedProcessGraph`.
-  - Projects to standard BPMN 2.0 XML, Mermaid Flowcharts, Swimlanes, and State Machines.
-  - Quarantines unverified assertions into an `AmbiguityRegister` (Defect Register).
-
----
-
-## 4. Local Data & Storage Layer
-
-```mermaid
-erDiagram
-    ORGANISATION ||--o{ USER : contains
-    ORGANISATION ||--o{ FILE : owns
-    FILE ||--o{ FILE_VERSION : tracks
-    FILE_VERSION ||--o{ GENERATION_RUN : inputs
-    GENERATION_RUN ||--o{ PROCESS_GRAPH_SNAPSHOT : snapshots
-
-    FILE {
-        string id PK
-        string name
-        string organisation_id FK
-        datetime created_at
-    }
-
-    FILE_VERSION {
-        string id PK
-        string file_id FK
-        int version_number
-        string file_hash
-        int file_size
-        string storage_path
-    }
-
-    PROCESS_GRAPH_SNAPSHOT {
-        string id PK
-        string process_name
-        json canonical_graph
-        json defect_register
-        string span_registry_hash
-        json projections
-    }
-```
-
-1. **SQLite (`injester.db`)**:
-   - Manages tenant boundaries (in multi-tenant enterprise mode) or single-workspace local state (`COMMUNITY_MODE=true`).
-   - Maintains version lineage, audit logs, file records, and snapshot registries.
-2. **FAISS Vector Store (`chunks.index` & `chunks.json`)**:
-   - Uses `sentence-transformers/all-MiniLM-L6-v2` (or configured embedding model) to generate 384-dimensional dense vectors.
-   - Enables sub-millisecond semantic similarity search across millions of chunks.
-3. **Local File Store (`storage/`)**:
-   - Stores raw ingested files (`.pdf`, `.docx`, etc.) alongside their generated `.md` and diagram artifacts.
-
----
-
-## 5. End-to-End Execution Flow
-
-```mermaid
-sequenceDiagram
-    autonumber
-    actor User as User / Client
-    participant API as FastAPI Router / CLI
-    participant Ext as DocumentExtractor
-    participant Chk as HierarchicalChunker
-    participant Dig as High-Fidelity Digitizer
-    participant Storage as SQLite & FAISS
-    participant UI as React Workbench
-
-    User->>API: Upload document (file.pdf)
-    API->>Ext: extract(file_path, version="v1")
-    Ext-->>API: Normalized Elements (Titles, Tables, Text)
-    API->>Chk: chunk_elements(elements)
-    Chk-->>API: Chunks + Section Hierarchies
-    API->>Dig: reconstruct_digital_markdown(elements, span_registry)
-    Dig-->>API: (Digital .md, Tables, Mermaid Flows, Citations Index)
-    API->>Storage: Ingest file record, chunks & FAISS vectors
-    API-->>User: Return Digital Document JSON (latency: ~1.2s)
-    User->>UI: Render Digital Markdown (.md) with Clickable [S###] Badges
-```
-
----
-
-## 6. Key Architectural Guarantees
-
-1. **Sub-2-Second Digitization**: By separating fast document digitization from optional, heavy procedural LLM reasoning, document devouring completes in 1 to 2 seconds.
-2. **Zero False Hallucinations**: Every sentence in the generated Markdown is traceable to an exact span ID `[S###]` with line and section provenance.
-3. **Zero Hardcoded Data**: Removed all static sample mocks, hardcoded fallbacks, and dummy arrays. The workstation displays exclusively real evidence from user files or renders a clean empty state.
-4. **Preserved Tables & Visuals**: Table structures are rendered as GFM tables rather than raw text blobs, and sequential flows are transcribed into native Mermaid diagrams.
-5. **No Synthetic Drift**: Documents (resumes, technical specifications, policy whitepapers, manuals) are treated as informative digital documents rather than being forced into procedural enterprise policy graphs.
+1. **Primacy of the Dual Canonical Model**: Document IR (Model A) and Semantic Process Graph (Model B) are linked sources of truth. Diagrams and Markdown are merely projected views.
+2. **Models Interpret and Assess; Change Engine Controls and Verifies**: AI models (OpenJev, Laya, LLMs) propose, classify, and assess; the deterministic Change Engine owns validation, approval gates, and recompilation.
+3. **Approval Gate & Cryptographic Boundary**: No document mutation may occur without an explicitly `APPROVED` ChangeSet. Approval generates an HMAC-SHA256 signature binding the exact document version, authenticated principal identity, and canonical command payload digest. Approved ChangeSets are deeply frozen (`is_frozen=True`, `FrozenDict`, `FrozenList`). Keys are provisioned automatically for local single-user mode (0600 file permissions) and explicitly required via `APPROVAL_SIGNING_KEY` for multi-user/production deployments (zero source-embedded fallback secrets).
+4. **General Documents Are Never Forced into SOP Workflows**: Resumes, contracts, reports, and papers use structural block editing without hallucinated procedure graphs.
+5. **No Lossless PDF Guarantees**: A flattened PDF has no editable semantic source package. Beelzebuth provides a defined, high-fidelity **reconstruction mode** rather than claiming impossible lossless PDF patching.
+6. **Style Preservation in Same-Format Editing**: Editing a DOCX modifies only targeted OpenXML elements; untouched sections remain identical.
+7. **Four-Tier Evidence Scoring**: All extracted and edited claims are scored as `STRONG`, `MODERATE`, `WEAK`, or `NONE` (new addition).
