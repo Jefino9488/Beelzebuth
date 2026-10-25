@@ -13,6 +13,7 @@ import sys
 import os
 import json
 import asyncio
+from pathlib import Path
 import pytest
 
 from mcp.client.stdio import stdio_client, StdioServerParameters
@@ -72,7 +73,13 @@ def test_mcp_protocol_full_editing_workflow():
         server_params = StdioServerParameters(
             command=sys.executable,
             args=["-m", "injester.mcp"],
-            env={**os.environ, "ALLOW_UNATTENDED_MCP_APPROVAL": "false", "APPROVAL_MODE": "manual"},
+            env={
+                **os.environ,
+                "ALLOW_UNATTENDED_MCP_APPROVAL": "false",
+                "APPROVAL_MODE": "manual",
+                "INJESTER_WORKSPACE": str(settings.WORKSPACE_DIR),
+                "ALLOWED_DOCUMENT_ROOTS": f"{settings.WORKSPACE_DIR},{Path(__file__).parent.parent}",
+            },
         )
 
         doc_path = "sample_docs/Workstation_Deployment_Guide.docx"
@@ -168,7 +175,13 @@ def test_mcp_protocol_unauthorized_approval_rejected():
         server_params = StdioServerParameters(
             command=sys.executable,
             args=["-m", "injester.mcp"],
-            env={**os.environ, "ALLOW_UNATTENDED_MCP_APPROVAL": "false", "APPROVAL_MODE": "manual"},
+            env={
+                **os.environ,
+                "ALLOW_UNATTENDED_MCP_APPROVAL": "false",
+                "APPROVAL_MODE": "manual",
+                "INJESTER_WORKSPACE": str(settings.WORKSPACE_DIR),
+                "ALLOWED_DOCUMENT_ROOTS": f"{settings.WORKSPACE_DIR},{Path(__file__).parent.parent}",
+            },
         )
 
         doc_path = "sample_docs/Workstation_Deployment_Guide.docx"

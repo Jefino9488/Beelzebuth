@@ -38,6 +38,9 @@ class Settings:
         self.WORKSPACE_DIR = Path(path).expanduser().resolve()
         self.STORAGE_DIR = (self.WORKSPACE_DIR / "storage").resolve()
         self.DATABASE_URL = f"sqlite:///{self.WORKSPACE_DIR / 'injester.db'}"
+        os.environ["INJESTER_WORKSPACE"] = str(self.WORKSPACE_DIR)
+        os.environ["STORAGE_DIR"] = str(self.STORAGE_DIR)
+        os.environ["DATABASE_URL"] = self.DATABASE_URL
         self.WORKSPACE_DIR.mkdir(parents=True, exist_ok=True)
         self.STORAGE_DIR.mkdir(parents=True, exist_ok=True)
 
