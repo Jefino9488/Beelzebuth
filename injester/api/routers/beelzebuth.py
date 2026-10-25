@@ -450,6 +450,18 @@ class ApproveChangeSetRequest(BaseModel):
     changeset_id: str
     rationale: Optional[str] = ""
     claimed_approver_id: Optional[str] = None
+    approval_token: Optional[str] = None
+
+
+class PreviewChangeSetRequest(BaseModel):
+    session_id: Optional[str] = None
+    changeset_id: str
+
+
+class VerifyDocumentRequest(BaseModel):
+    source_path: str
+    recompiled_path: str
+    changeset_id: Optional[str] = None
 
 
 class RecompileRequest(BaseModel):
@@ -502,6 +514,25 @@ def propose_document_changeset(req: ProposeEditRequest):
     return changeset_dict
 
 
+@router.post("/changeset/preview")
+def preview_document_changeset(req: PreviewChangeSetRequest):
+    """Generates before/after diff summary and single-use human approval token."""
+    changeset = document_tools._changesets.get(req.changeset_id)
+    if not changeset:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"ChangeSet '{req.changeset_id}' not found.",
+        )
+    try:
+        preview = document_tools.preview_changeset(req.changeset_id)
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Failed to generate preview: {str(e)}",
+        )
+    return preview
+
+
 @router.post("/changeset/approve")
 def approve_document_changeset(
     req: ApproveChangeSetRequest,
@@ -512,6 +543,7 @@ def approve_document_changeset(
     Security Boundary: The approver identity is derived strictly from the authenticated
     security context (sec_ctx.user_id / sec_ctx.email). Any attempt to supply a different
     approver identity in the request body is rejected with 403 Forbidden.
+    Requires human approval token in manual mode.
     """
     session = document_tools._sessions.get(req.session_id)
     if not session:
@@ -541,6 +573,7 @@ def approve_document_changeset(
             changeset_id=req.changeset_id,
             approver=sec_ctx,
             rationale=req.rationale or "",
+            approval_token=req.approval_token,
         )
     except Exception as e:
         raise HTTPException(
@@ -571,9 +604,38 @@ def recompile_document_changeset(req: RecompileRequest):
             changeset_id=req.changeset_id,
             output_path=req.output_docx_path,
         )
+        # Also run 4-pillar verification to provide comprehensive verification breakdown
+        source_path = session.file_path if session else None
+        if source_path and os.path.exists(source_path) and os.path.exists(req.output_docx_path):
+            try:
+                verification = document_tools.verify_document(
+                    source_path=source_path,
+                    recompiled_path=req.output_docx_path,
+                    changeset_id=req.changeset_id,
+                )
+                report["verification"] = verification
+            except Exception:
+                pass
     except Exception as e:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=f"Recompilation aborted: {str(e)}",
         )
     return report
+
+
+@router.post("/changeset/verify")
+def verify_document_integrity(req: VerifyDocumentRequest):
+    """Runs 4-pillar verification against recompiled document."""
+    try:
+        ver = document_tools.verify_document(
+            source_path=req.source_path,
+            recompiled_path=req.recompiled_path,
+            changeset_id=req.changeset_id,
+        )
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Verification failed: {str(e)}",
+        )
+    return ver

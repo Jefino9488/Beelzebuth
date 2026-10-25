@@ -915,6 +915,107 @@ def test_api_approval_spoofing_rejected(initialized_session):
         app.dependency_overrides.clear()
 
 
+def test_beelzebuth_api_full_preview_recompile_and_verify_lifecycle():
+    """Verifies complete REST API editing lifecycle: load -> propose -> preview -> approve -> recompile -> verify."""
+    from fastapi.testclient import TestClient
+    from injester.api.app import app
+    from injester.api.deps import get_current_sec_ctx
+    from injester.domain.auth import SecurityContext
+    from injester.domain.models import UserRole
+    from injester.config import settings
+
+    sec_ctx = SecurityContext(
+        user_id="lead_editor_carol",
+        email="carol@corp.com",
+        role=UserRole.SUPER_ADMIN,
+        organisation_id="platform",
+    )
+    app.dependency_overrides[get_current_sec_ctx] = lambda: sec_ctx
+    client = TestClient(app)
+
+    out_dir = settings.STORAGE_DIR / "recompiled"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    out_docx = str(out_dir / "api_lifecycle_test_output.docx")
+
+    try:
+        doc_path = "sample_docs/Workstation_Deployment_Guide.docx"
+
+        # 1. Load Session
+        load_res = client.post("/api/v1/beelzebuth/session/load", json={"file_path": doc_path})
+        assert load_res.status_code == 200, load_res.text
+        load_data = load_res.json()
+        sess_id = load_data["session_id"]
+        assert load_data["step_count"] == 6
+
+        # 2. Propose Change
+        new_text = "Step 1: Connect ultra-high resolution DisplayPort monitor."
+        cmd_payload = {
+            "session_id": sess_id,
+            "command": {
+                "operation": "EDIT_PARAGRAPH_TEXT",
+                "target_block_id": "block-003",
+                "source_block_ids": ["block-003"],
+                "new_values": {"new_text": new_text},
+                "expected_document_version": load_data["version_id"],
+                "rationale": "Beelzebuth workbench API lifecycle verification",
+            }
+        }
+        prop_res = client.post("/api/v1/beelzebuth/changeset/propose", json=cmd_payload)
+        assert prop_res.status_code == 200, prop_res.text
+        cs_id = prop_res.json()["changeset_id"]
+
+        # 3. Preview Change and obtain approval token
+        prev_res = client.post("/api/v1/beelzebuth/changeset/preview", json={"changeset_id": cs_id})
+        assert prev_res.status_code == 200, prev_res.text
+        prev_data = prev_res.json()
+        assert prev_data["is_valid"] is True
+        token = prev_data["approval_token"]
+        assert token is not None
+
+        # 4. Approve Change with Token
+        appr_res = client.post("/api/v1/beelzebuth/changeset/approve", json={
+            "session_id": sess_id,
+            "changeset_id": cs_id,
+            "rationale": "Approved via workbench UI",
+            "approval_token": token,
+        })
+        assert appr_res.status_code == 200, appr_res.text
+        assert appr_res.json()["status"] == "APPROVED"
+        assert len(appr_res.json()["approval_signature"]) == 64
+
+        # 5. Recompile and inspect verification breakdown
+        recomp_res = client.post("/api/v1/beelzebuth/changeset/recompile", json={
+            "session_id": sess_id,
+            "changeset_id": cs_id,
+            "output_docx_path": out_docx,
+        })
+        assert recomp_res.status_code == 200, recomp_res.text
+        recomp_data = recomp_res.json()
+        assert recomp_data["is_successful"] is True
+        assert recomp_data["unmodified_blocks_intact"] is True
+        assert "verification" in recomp_data
+        assert recomp_data["verification"]["is_verified"] is True
+        assert recomp_data["verification"]["operation_correctness"] is True
+
+        # 6. Standalone 4-pillar verify endpoint
+        ver_res = client.post("/api/v1/beelzebuth/changeset/verify", json={
+            "source_path": doc_path,
+            "recompiled_path": out_docx,
+            "changeset_id": cs_id,
+        })
+        assert ver_res.status_code == 200, ver_res.text
+        ver_data = ver_res.json()
+        assert ver_data["is_verified"] is True
+        assert ver_data["structural_integrity"] is True
+        assert ver_data["formatting_preservation"] is True
+        assert ver_data["content_preservation"] is True
+        assert ver_data["operation_correctness"] is True
+    finally:
+        app.dependency_overrides.clear()
+        if os.path.exists(out_docx):
+            os.remove(out_docx)
+
+
 def test_tampered_approval_signature_rejection(initialized_session, temp_output_docx):
     """P0 Security: Forged or tampered cryptographic approval signatures are detected and aborted."""
     pipeline, session = initialized_session
