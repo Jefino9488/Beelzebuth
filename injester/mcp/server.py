@@ -28,6 +28,7 @@ from injester.application.documents import DocumentService
 from injester.application.retrieval import RetrievalService
 from injester.application.digest import DigestService
 from injester.application.process_graph import ProcessGraphService
+from injester.application.document_tools import document_tools
 
 mcp_app = MCPServer(
     name="injester",
@@ -37,6 +38,10 @@ mcp_app = MCPServer(
 )
 
 
+# ===========================================================================
+# Stage 1: Document Discovery & Inspection Tools
+# ===========================================================================
+
 @mcp_app.tool()
 def list_documents() -> List[Dict[str, Any]]:
     """
@@ -45,17 +50,203 @@ def list_documents() -> List[Dict[str, Any]]:
     """
     logger.info("Executing tool: list_documents")
     manager.ensure_initialized()
-    docs = DocumentService().list_documents()
-    return [
-        {
-            "id": d.doc_id,
-            "name": d.name,
-            "indexed_chunks": d.chunk_count,
-            "versions": d.versions_count,
-            "created_at": d.created_at,
-        }
-        for d in docs
-    ]
+    return document_tools.list_documents()
+
+
+@mcp_app.tool()
+def inspect_document(document_id_or_path: str) -> Dict[str, Any]:
+    """
+    Inspect a document's structural properties, document type (Resume, Manual, Contract, etc.),
+    block counts, and procedural step counts.
+    """
+    logger.info("Executing tool: inspect_document for: %s", document_id_or_path)
+    manager.ensure_initialized()
+    return document_tools.inspect_document(document_id_or_path)
+
+
+@mcp_app.tool()
+def get_document_structure(document_id_or_path: str) -> Dict[str, Any]:
+    """
+    Retrieve the hierarchical structural outline of a document: sections, headings,
+    block IDs, text previews, and procedural workflow steps.
+    """
+    logger.info("Executing tool: get_document_structure for: %s", document_id_or_path)
+    manager.ensure_initialized()
+    return document_tools.get_document_structure(document_id_or_path)
+
+
+@mcp_app.tool()
+def find_blocks(
+    document_id_or_path: str,
+    query: Optional[str] = None,
+    block_type: Optional[str] = None,
+) -> List[Dict[str, Any]]:
+    """
+    Search blocks in a document matching a text query substring or block type (e.g. HEADING, PARAGRAPH, TABLE).
+    Returns block IDs, content, and sequence indices for targeted edits.
+    """
+    logger.info("Executing tool: find_blocks for: %s (query='%s', type='%s')", document_id_or_path, query, block_type)
+    manager.ensure_initialized()
+    return document_tools.find_blocks(document_id_or_path, query=query, block_type=block_type)
+
+
+@mcp_app.tool()
+def get_block_content(
+    document_id_or_path: str,
+    block_id: str,
+) -> Dict[str, Any]:
+    """
+    Retrieve detailed content, formatting properties (bold, italic, heading level),
+    and source location for a specific block ID.
+    """
+    logger.info("Executing tool: get_block_content for: %s, block: %s", document_id_or_path, block_id)
+    manager.ensure_initialized()
+    return document_tools.get_block_content(document_id_or_path, block_id)
+
+
+# ===========================================================================
+# Stage 2: Change Proposal & Review Tools
+# ===========================================================================
+
+@mcp_app.tool()
+def propose_text_edit(
+    document_id_or_path: str,
+    block_id: str,
+    new_text: str,
+    rationale: str = "",
+) -> Dict[str, Any]:
+    """
+    Propose updating the text of a specific paragraph block.
+    Generates a reviewable ChangeSet with impact analysis without modifying the source document.
+    """
+    logger.info("Executing tool: propose_text_edit on: %s, block: %s", document_id_or_path, block_id)
+    manager.ensure_initialized()
+    return document_tools.propose_text_edit(
+        document_id_or_path=document_id_or_path,
+        block_id=block_id,
+        new_text=new_text,
+        rationale=rationale,
+    )
+
+
+@mcp_app.tool()
+def propose_section_reorder(
+    document_id_or_path: str,
+    heading_block_id: str,
+    before_heading_block_id: Optional[str] = None,
+    rationale: str = "",
+) -> Dict[str, Any]:
+    """
+    Propose moving an entire section (heading and all enclosed blocks/tables) before another section.
+    Returns a reviewable ChangeSet with structural validation.
+    """
+    logger.info("Executing tool: propose_section_reorder on: %s, heading: %s", document_id_or_path, heading_block_id)
+    manager.ensure_initialized()
+    return document_tools.propose_section_reorder(
+        document_id_or_path=document_id_or_path,
+        heading_block_id=heading_block_id,
+        before_heading_block_id=before_heading_block_id,
+        rationale=rationale,
+    )
+
+
+@mcp_app.tool()
+def propose_block_move(
+    document_id_or_path: str,
+    step_id: str,
+    before_step_id: Optional[str] = None,
+    rationale: str = "",
+) -> Dict[str, Any]:
+    """
+    Propose reordering a procedural step within its procedure scope.
+    Checks step prerequisite dependencies and returns an auditable ChangeSet.
+    """
+    logger.info("Executing tool: propose_block_move on: %s, step: %s", document_id_or_path, step_id)
+    manager.ensure_initialized()
+    return document_tools.propose_block_move(
+        document_id_or_path=document_id_or_path,
+        step_id=step_id,
+        before_step_id=before_step_id,
+        rationale=rationale,
+    )
+
+
+@mcp_app.tool()
+def get_changeset(changeset_id: str) -> Dict[str, Any]:
+    """Retrieve details, status, and validation impact of a proposed ChangeSet."""
+    logger.info("Executing tool: get_changeset for: %s", changeset_id)
+    manager.ensure_initialized()
+    return document_tools.get_changeset(changeset_id)
+
+
+@mcp_app.tool()
+def preview_changeset(changeset_id: str) -> Dict[str, Any]:
+    """
+    Generate a human-readable before-and-after diff preview for a proposed ChangeSet,
+    highlighting affected blocks, text changes, and dependency validation.
+    """
+    logger.info("Executing tool: preview_changeset for: %s", changeset_id)
+    manager.ensure_initialized()
+    return document_tools.preview_changeset(changeset_id)
+
+
+# ===========================================================================
+# Stage 3: Approval, Application & Verification Tools
+# ===========================================================================
+
+@mcp_app.tool()
+def approve_changeset(
+    changeset_id: str,
+    rationale: str = "",
+) -> Dict[str, Any]:
+    """
+    Authorize and approve a proposed ChangeSet.
+    Computes an immutable HMAC-SHA256 signature binding the change payload to the active document version.
+    """
+    logger.info("Executing tool: approve_changeset for: %s", changeset_id)
+    manager.ensure_initialized()
+    return document_tools.approve_changeset(changeset_id=changeset_id, rationale=rationale)
+
+
+@mcp_app.tool()
+def apply_changeset(
+    changeset_id: str,
+    output_path: Optional[str] = None,
+) -> Dict[str, Any]:
+    """
+    Apply an APPROVED ChangeSet using surgical OOXML AST surgery and re-verify document integrity.
+    Re-extracts the modified document and verifies that untouched blocks and styles remain intact.
+    """
+    logger.info("Executing tool: apply_changeset for: %s", changeset_id)
+    manager.ensure_initialized()
+    return document_tools.apply_changeset(changeset_id=changeset_id, output_path=output_path)
+
+
+@mcp_app.tool()
+def verify_document(
+    source_path: str,
+    recompiled_path: str,
+    changeset_id: Optional[str] = None,
+) -> Dict[str, Any]:
+    """
+    Compare original and recompiled documents to verify block preservation,
+    layout invariants, and absence of synthetic drift.
+    """
+    logger.info("Executing tool: verify_document comparing '%s' and '%s'", source_path, recompiled_path)
+    manager.ensure_initialized()
+    return document_tools.verify_document(
+        source_path=source_path,
+        recompiled_path=recompiled_path,
+        changeset_id=changeset_id,
+    )
+
+
+@mcp_app.tool()
+def get_change_report(changeset_id: str) -> Dict[str, Any]:
+    """Retrieve the auditable verification report for an applied ChangeSet."""
+    logger.info("Executing tool: get_change_report for: %s", changeset_id)
+    manager.ensure_initialized()
+    return document_tools.get_change_report(changeset_id)
 
 
 @mcp_app.tool()
