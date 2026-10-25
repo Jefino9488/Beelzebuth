@@ -137,3 +137,94 @@ def test_four_identities_and_tenant_isolation(db_session, superadmin_ctx):
     # (e) Super Admin has platform-wide visibility
     super_files = repo.list_files(superadmin_ctx)
     assert any(f.id == file_record.id for f in super_files)
+
+
+def test_cross_tenant_api_returns_403_not_500(db_session, superadmin_ctx):
+    """P0 Security: Unauthorized cross-tenant API requests return HTTP 403 Forbidden, never 500."""
+    from fastapi.testclient import TestClient
+    from injester.api.app import create_app
+    from injester.api.deps import get_current_sec_ctx, get_db
+
+    repo = TenantRepository(db_session)
+    org_a = repo.create_organisation(superadmin_ctx, name=f"Org A {uuid.uuid4().hex[:6]}")
+    repo.approve_organisation(superadmin_ctx, org_a.id)
+
+    org_b = repo.create_organisation(superadmin_ctx, name=f"Org B {uuid.uuid4().hex[:6]}")
+    repo.approve_organisation(superadmin_ctx, org_b.id)
+
+    admin_a = repo.create_client_admin(
+        superadmin_ctx,
+        org_id=org_a.id,
+        email=f"admin_a_{uuid.uuid4().hex[:6]}@orga.com",
+        password="Password123!"
+    )
+    admin_a_ctx = SecurityContext(
+        user_id=admin_a.id,
+        email=admin_a.email,
+        role=admin_a.role,
+        organisation_id=org_a.id,
+    )
+
+    app = create_app()
+    app.dependency_overrides[get_current_sec_ctx] = lambda: admin_a_ctx
+    app.dependency_overrides[get_db] = lambda: db_session
+
+    try:
+        client = TestClient(app)
+        # Attempt to access Org B users while authenticated as Org A Admin
+        res = client.get(f"/api/v1/console/organisations/{org_b.id}/users")
+        assert res.status_code == 403, f"Expected 403 Forbidden, got {res.status_code}: {res.text}"
+        assert "Access denied" in res.json().get("detail", "")
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_superadmin_digest_rejects_file_outside_target_tenant(db_session, superadmin_ctx, tmp_path):
+    """
+    P2 Security: When target_organisation_id is explicitly selected, generate_digest()
+    fails fast with AccessDeniedError if any requested file belongs to a different organisation,
+    preventing misleading 'no indexed documents' errors.
+    """
+    from injester.pipeline import InjesterPipeline
+
+    repo = TenantRepository(db_session)
+    org_a = repo.create_organisation(superadmin_ctx, name=f"Target Org A {uuid.uuid4().hex[:6]}")
+    repo.approve_organisation(superadmin_ctx, org_a.id)
+
+    org_b = repo.create_organisation(superadmin_ctx, name=f"Other Org B {uuid.uuid4().hex[:6]}")
+    repo.approve_organisation(superadmin_ctx, org_b.id)
+
+    admin_b = repo.create_client_admin(
+        superadmin_ctx,
+        org_id=org_b.id,
+        email=f"admin_b_{uuid.uuid4().hex[:6]}@orgb.com",
+        password="Password123!"
+    )
+    admin_b_ctx = SecurityContext(
+        user_id=admin_b.id,
+        email=admin_b.email,
+        role=admin_b.role,
+        organisation_id=org_b.id,
+    )
+
+    # File registered under Org B
+    file_b, _ = repo.upload_file(
+        sec_ctx=admin_b_ctx,
+        filename="server_provisioning.docx",
+        content_bytes=b"Server provisioning procedures and database setup.",
+    )
+
+    pipeline = InjesterPipeline(session=db_session)
+
+    # Superadmin requests file from Org B while explicitly targeting Org A
+    with pytest.raises(AccessDeniedError) as exc:
+        pipeline.generate_digest(
+            sec_ctx=superadmin_ctx,
+            topic_goal="Cluster Setup Digest",
+            file_ids=[file_b.id],
+            target_organisation_id=org_a.id,
+        )
+
+    assert "do not belong to the target organisation" in str(exc.value)
+    assert org_a.id in str(exc.value)
+

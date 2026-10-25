@@ -5,14 +5,15 @@ Enterprise Multi-Tenant Ingestion, Evidence-First Process Graph & Citation-Groun
 
 from pathlib import Path
 from contextlib import asynccontextmanager
-from fastapi import FastAPI, Depends, HTTPException, Request
+from fastapi import FastAPI, Depends, HTTPException, Request, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse
+from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse, JSONResponse
 from sqlalchemy.orm import Session
 from sqlalchemy import text
 
 from injester.config import settings
+from injester.domain.auth import AccessDeniedError
 from injester.infrastructure.db import init_db
 from injester.api.deps import get_db
 from injester.api.routers import auth, admin, tenant, files, process_graph, jobs, beelzebuth, settings_api, console
@@ -87,6 +88,13 @@ def create_app() -> FastAPI:
         allow_methods=["*"],
         allow_headers=["*"],
     )
+
+    @app.exception_handler(AccessDeniedError)
+    async def access_denied_exception_handler(request: Request, exc: AccessDeniedError):
+        return JSONResponse(
+            status_code=status.HTTP_403_FORBIDDEN,
+            content={"detail": str(exc)},
+        )
 
     # Mount REST Routers first so they take precedence
     app.include_router(settings_api.router)

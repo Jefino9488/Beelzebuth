@@ -1,4 +1,6 @@
 import os
+os.environ["TESTING"] = "true"
+os.environ.setdefault("APPROVAL_SIGNING_KEY", "dedicated-beelzebuth-approval-secret-key-32chars-min")
 import pytest
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker

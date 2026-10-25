@@ -45,23 +45,40 @@ def test_legacy_ui_redirects_to_dashboard():
     assert res.status_code in (302, 303, 307)
     assert res.headers["location"].endswith("/dashboard")
 
-def test_web_settings_api():
-    # GET settings
-    res = client.get("/api/v1/settings")
-    assert res.status_code == 200
-    data = res.json()
-    assert "model_name" in data
-    assert "openai_base_url" in data
-    assert "presets" in data
+def test_web_settings_api(tmp_path, monkeypatch):
+    from injester.config import settings
 
-    # POST settings
-    res2 = client.post("/api/v1/settings", json={
-        "preset": "ollama",
-        "base_url": "http://localhost:11434/v1",
-        "model_name": "qwen2.5:7b-ctx16k",
-    })
-    assert res2.status_code == 200
-    assert res2.json()["status"] == "success"
+    orig_base = settings.OPENAI_BASE_URL
+    orig_model = settings.MODEL_NAME
+    orig_ws = settings.WORKSPACE_DIR
+
+    # Point workspace to isolated temporary directory
+    monkeypatch.setattr(settings, "WORKSPACE_DIR", tmp_path)
+
+    try:
+        # GET settings
+        res = client.get("/api/v1/settings")
+        assert res.status_code == 200
+        data = res.json()
+        assert "model_name" in data
+        assert "openai_base_url" in data
+        assert "presets" in data
+
+        # POST settings
+        res2 = client.post("/api/v1/settings", json={
+            "preset": "ollama",
+            "base_url": "http://localhost:11434/v1",
+            "model_name": "qwen2.5:7b-ctx16k",
+        })
+        assert res2.status_code == 200
+        assert res2.json()["status"] == "success"
+
+        # Verify config was written into isolated tmp_path, not user home
+        assert (tmp_path / "config.env").exists()
+    finally:
+        settings.OPENAI_BASE_URL = orig_base
+        settings.MODEL_NAME = orig_model
+        settings.WORKSPACE_DIR = orig_ws
 
 def test_web_beelzebuth_devour(monkeypatch):
     from unittest.mock import MagicMock

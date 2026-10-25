@@ -87,6 +87,7 @@ class Settings:
     SYSTEM1_API_BASE_URL: str = os.getenv("SYSTEM1_API_BASE_URL", "")
     SYSTEM1_API_KEY: str = os.getenv("SYSTEM1_API_KEY", "")
     SYSTEM1_MODEL: str = os.getenv("SYSTEM1_MODEL", "")
+    OPENJEV_MODEL_NAME: str = os.getenv("OPENJEV_MODEL_NAME", "AlexWortega/openjev:qwen3.5-0.8b-nli-v2s-long")
     SYSTEM1_POLICY_ACTOR_THRESHOLD: float = float(os.getenv("SYSTEM1_POLICY_ACTOR_THRESHOLD", "0.50"))
     SYSTEM1_POLICY_ACTION_THRESHOLD: float = float(os.getenv("SYSTEM1_POLICY_ACTION_THRESHOLD", "0.50"))
     SYSTEM1_POLICY_OUTCOME_THRESHOLD: float = float(os.getenv("SYSTEM1_POLICY_OUTCOME_THRESHOLD", "0.40"))
@@ -96,6 +97,56 @@ class Settings:
     JWT_SECRET: str = os.getenv("JWT_SECRET", "super-secret-jwt-platform-key-change-in-prod-2026")
     JWT_ALGORITHM: str = "HS256"
     JWT_EXPIRATION_MINUTES: int = 60 * 24
+
+    # Dedicated Cryptographic ChangeSet Approval Secret (HS256 HMAC)
+    # Must be kept strictly distinct from JWT_SECRET to ensure cryptographic domain separation.
+    APPROVAL_SIGNING_KEY: str = os.getenv("APPROVAL_SIGNING_KEY", "")
+
+    def get_or_create_approval_signing_key(self) -> str:
+        """
+        Resolves or initializes the cryptographic approval signing key:
+        1. If APPROVAL_SIGNING_KEY is set in the environment, use it directly.
+        2. If running in production or multi-user mode without an explicit key, fail closed (returns "").
+        3. If running in local single-user mode, automatically generate a cryptographically
+           secure random 256-bit key on first launch, persist it in the local workspace directory
+           with restricted file permissions (0600), and reuse it across restarts.
+        """
+        env_key = os.getenv("APPROVAL_SIGNING_KEY", "").strip()
+        if env_key:
+            return env_key
+
+        is_prod = self.APP_ENV in ("production", "prod")
+        is_multi_user = not self.COMMUNITY_MODE and not os.getenv("TESTING")
+        if is_prod or is_multi_user:
+            return ""
+
+        key_file = self.WORKSPACE_DIR / ".approval_signing_key"
+        if key_file.exists():
+            try:
+                existing_key = key_file.read_text(encoding="utf-8").strip()
+                if len(existing_key) >= 32:
+                    return existing_key
+            except Exception:
+                pass
+
+        import secrets
+        generated_key = secrets.token_hex(32)
+        try:
+            self.WORKSPACE_DIR.mkdir(parents=True, exist_ok=True)
+            flags = os.O_WRONLY | os.O_CREAT | os.O_TRUNC
+            fd = os.open(str(key_file), flags, 0o600)
+            with open(fd, "w", encoding="utf-8") as f:
+                f.write(generated_key)
+            try:
+                os.chmod(str(key_file), 0o600)
+            except Exception:
+                pass
+        except Exception as e:
+            raise RuntimeError(
+                f"Failed to persist generated approval signing key to '{key_file}': {e}. "
+                "Set APPROVAL_SIGNING_KEY explicitly in the environment or ensure the workspace directory is writable."
+            ) from e
+        return generated_key
 
     # Environment & Security
     APP_ENV: str = os.getenv("APP_ENV", os.getenv("ENV", "development")).lower()
@@ -107,8 +158,16 @@ class Settings:
     ]
 
     def validate_security(self) -> None:
-        """Enforces fail-fast startup checks in production when community mode is disabled."""
-        if not self.COMMUNITY_MODE and self.APP_ENV in ("production", "prod"):
+        """Enforces fail-fast startup checks in production and multi-user environments."""
+        is_prod = self.APP_ENV in ("production", "prod")
+        is_multi_user = not self.COMMUNITY_MODE
+
+        if is_prod:
+            if self.COMMUNITY_MODE:
+                raise ValueError(
+                    "FATAL SECURITY CONFIGURATION: COMMUNITY_MODE authentication bypass cannot be enabled in production! "
+                    "Set COMMUNITY_MODE=false and configure proper authentication credentials."
+                )
             default_secrets = [
                 "super-secret-jwt-platform-key-change-in-prod-2026",
                 "secret",
@@ -123,6 +182,20 @@ class Settings:
                 raise ValueError(
                     "FATAL SECURITY CONFIGURATION: Insecure default SUPERADMIN_INITIAL_PASSWORD detected in production environment! "
                     "Set a unique SUPERADMIN_INITIAL_PASSWORD environment variable."
+                )
+
+        # Enforce dedicated APPROVAL_SIGNING_KEY whenever production or multi-user mode is active
+        if is_prod or is_multi_user:
+            mode_desc = "production" if is_prod else "multi-user (COMMUNITY_MODE=false)"
+            if not self.APPROVAL_SIGNING_KEY or len(self.APPROVAL_SIGNING_KEY.strip()) < 32:
+                raise ValueError(
+                    f"FATAL SECURITY CONFIGURATION: Dedicated APPROVAL_SIGNING_KEY is missing or too short (minimum 32 characters) in {mode_desc}! "
+                    "Cryptographic approval signing must have an independent, secure secret provisioned via APPROVAL_SIGNING_KEY."
+                )
+            if self.APPROVAL_SIGNING_KEY == self.JWT_SECRET:
+                raise ValueError(
+                    "FATAL SECURITY CONFIGURATION: APPROVAL_SIGNING_KEY must not reuse JWT_SECRET! "
+                    "Use separate, dedicated cryptographic secrets for token authentication and document change approvals."
                 )
 
     def update_llm_settings(self, base_url: str, api_key: str, model_name: str) -> None:
@@ -204,6 +277,7 @@ class Settings:
             self.SYSTEM1_MODEL = model.strip()
 
 settings = Settings()
+settings.APPROVAL_SIGNING_KEY = settings.get_or_create_approval_signing_key()
 settings.validate_security()
 settings.WORKSPACE_DIR.mkdir(parents=True, exist_ok=True)
 settings.STORAGE_DIR.mkdir(parents=True, exist_ok=True)

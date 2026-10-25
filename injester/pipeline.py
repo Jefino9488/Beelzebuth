@@ -49,10 +49,17 @@ class InjesterPipeline:
             self.session.close()
 
     def _compute_config_hash(self, run_type: str = "process_graph") -> str:
+        verifier_provider = getattr(settings, "SYSTEM1_PROVIDER", "openjev")
+        verifier_model = (
+            getattr(settings, "SYSTEM1_MODEL", None)
+            or getattr(settings, "OPENJEV_MODEL_NAME", None)
+            or getattr(settings, "JEV_MODEL", None)
+            or "system1-v1"
+        )
         cfg_manifest = {
             "model_name": getattr(settings, "MODEL_NAME", "default"),
-            "verifier_provider": getattr(settings, "SYSTEM1_PROVIDER", "openjev"),
-            "verifier_model": getattr(settings, "OPENJEV_MODEL_NAME", "system1-v1"),
+            "verifier_provider": verifier_provider,
+            "verifier_model": verifier_model,
             "validation_policy_version": "1.0",
             "schema_version": "1.0",
             "pipeline_version": "2.0.0",
@@ -116,7 +123,8 @@ class InjesterPipeline:
         self,
         sec_ctx: SecurityContext,
         topic_goal: str,
-        file_ids: Optional[List[str]] = None
+        file_ids: Optional[List[str]] = None,
+        target_organisation_id: Optional[str] = None,
     ) -> Tuple[str, ValidationReport]:
         """
         Generates an auditable, citation-grounded document digest from tenant documents:
@@ -125,7 +133,10 @@ class InjesterPipeline:
         3. Validates citations and claim grounding.
         4. Compiles final traceable Markdown digest with Citation Index.
         """
-        tenant_id = sec_ctx.organisation_id
+        if target_organisation_id and not sec_ctx.is_super_admin:
+            sec_ctx.assert_tenant_access(target_organisation_id)
+
+        tenant_id = target_organisation_id or sec_ctx.organisation_id
         if not tenant_id and not sec_ctx.is_super_admin:
             raise AccessDeniedError("Tenant organisation required to generate digest.")
 
@@ -139,16 +150,43 @@ class InjesterPipeline:
             inaccessible = requested_ids - set(accessible_files.keys())
             if inaccessible:
                 raise AccessDeniedError(f"Inaccessible resources requested: {sorted(list(inaccessible))}")
+
+            # When a target organisation is explicit, require every requested file to belong to that organisation
+            if target_organisation_id:
+                cross_tenant_files = [
+                    fid for fid in requested_ids
+                    if accessible_files[fid].organisation_id != target_organisation_id
+                ]
+                if cross_tenant_files:
+                    raise AccessDeniedError(
+                        f"Requested file(s) {sorted(cross_tenant_files)} do not belong to the target organisation '{target_organisation_id}'."
+                    )
             target_ids = requested_ids
         else:
-            target_ids = set(accessible_files.keys())
+            if tenant_id:
+                target_ids = {fid for fid, f in accessible_files.items() if f.organisation_id == tenant_id}
+            else:
+                target_ids = set(accessible_files.keys())
 
-        # Load all tenant chunks from vector store metadata
-        _, all_chunks = self.vector_store._load_tenant_index(tenant_id or "platform")
+        # Load chunks from the appropriate isolated tenant vector store(s)
+        if tenant_id:
+            _, all_chunks = self.vector_store._load_tenant_index(tenant_id)
+        else:
+            # Superadmin without explicit tenant_id: enumerate the distinct organisations of the target files
+            target_orgs = {accessible_files[fid].organisation_id for fid in target_ids if accessible_files[fid].organisation_id}
+            all_chunks = []
+            if target_orgs:
+                for org in sorted(target_orgs):
+                    _, org_chunks = self.vector_store._load_tenant_index(org)
+                    all_chunks.extend(org_chunks)
+            else:
+                _, all_chunks = self.vector_store._load_tenant_index("platform")
+
         chunks_to_use = [c for c in all_chunks if c.document_id in target_ids]
 
         if not chunks_to_use:
-            raise ValueError(f"No indexed documents found for tenant '{tenant_id}'. Please ingest files first.")
+            scope_desc = f"tenant '{tenant_id}'" if tenant_id else "accessible files"
+            raise ValueError(f"No indexed documents found for {scope_desc}. Please ingest files first.")
 
         # Build document digest using LLM + Instructor
         generator = DigestGenerator(self.vector_store)
