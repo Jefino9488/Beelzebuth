@@ -1,8 +1,17 @@
 import pytest
-from injester.sop.validator import CitationValidator
-from injester.sop.spans import SourceSpan, SpanRegistry
+import torch
+from injester.synthesis.validator import CitationValidator
+from injester.synthesis.spans import SourceSpan, SpanRegistry
 from injester.ingestion.schema import DocumentChunk, ProvenanceMetadata
-from injester.sop.schemas import SOPDocument, SOPSection, SOPClaim, ClaimCitation
+from injester.synthesis.schemas import DigestDocument, DigestSection, DigestClaim, ClaimCitation
+
+@pytest.fixture(autouse=True)
+def clean_cuda_cache():
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+    yield
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
 
 @pytest.fixture
 def loan_span_and_chunk():
@@ -48,19 +57,19 @@ def test_adversarial_mutation_1_number_tampering(loan_span_and_chunk):
     chunk, registry = loan_span_and_chunk
     validator = CitationValidator()
 
-    section = SOPSection(
+    section = DigestSection(
         section_title="5. Decision Points",
         content="Loans exceeding $25,000 require Branch Manager approval. [S001]",
         claims=[
-            SOPClaim(
+            DigestClaim(
                 claim_text="Loans exceeding $25,000 require Branch Manager approval.",
                 claim_type="rule",
                 span_id="S001",
             )
         ]
     )
-    doc = SOPDocument(
-        title="Personal Loan SOP",
+    doc = DigestDocument(
+        title="Personal Loan Policy",
         purpose="Lending",
         target_audience="Officers",
         sections=[section]
@@ -82,19 +91,19 @@ def test_adversarial_mutation_2_role_substitution(loan_span_and_chunk):
     chunk, registry = loan_span_and_chunk
     validator = CitationValidator()
 
-    section = SOPSection(
+    section = DigestSection(
         section_title="5. Decision Points",
         content="Loans exceeding $20,000 require Senior Credit Analyst approval. [S001]",
         claims=[
-            SOPClaim(
+            DigestClaim(
                 claim_text="Loans exceeding $20,000 require Senior Credit Analyst approval.",
                 claim_type="rule",
                 span_id="S001",
             )
         ]
     )
-    doc = SOPDocument(
-        title="Personal Loan SOP",
+    doc = DigestDocument(
+        title="Personal Loan Policy",
         purpose="Lending",
         target_audience="Officers",
         sections=[section]
@@ -116,19 +125,19 @@ def test_adversarial_mutation_3_unsupported_timeframe_injection(loan_span_and_ch
     chunk, registry = loan_span_and_chunk
     validator = CitationValidator()
 
-    section = SOPSection(
+    section = DigestSection(
         section_title="5. Decision Points",
         content="Loans exceeding $20,000 require Branch Manager approval, who has 2 business days to decide. [S001]",
         claims=[
-            SOPClaim(
+            DigestClaim(
                 claim_text="Loans exceeding $20,000 require Branch Manager approval, who has 2 business days to decide.",
                 claim_type="sla",
                 span_id="S001",
             )
         ]
     )
-    doc = SOPDocument(
-        title="Personal Loan SOP",
+    doc = DigestDocument(
+        title="Personal Loan Policy",
         purpose="Lending",
         target_audience="Officers",
         sections=[section]
@@ -170,19 +179,19 @@ def test_adversarial_mutation_4_condition_injection():
     )
     validator = CitationValidator()
 
-    section = SOPSection(
+    section = DigestSection(
         section_title="5. Decision Points",
         content="Branch Manager approves loans over $20,000 after checking the customer CIBIL score. [S001]",
         claims=[
-            SOPClaim(
+            DigestClaim(
                 claim_text="Branch Manager approves loans over $20,000 after checking the customer CIBIL score.",
                 claim_type="rule",
                 span_id="S001",
             )
         ]
     )
-    doc = SOPDocument(
-        title="Personal Loan SOP",
+    doc = DigestDocument(
+        title="Personal Loan Policy",
         purpose="Lending",
         target_audience="Officers",
         sections=[section]
@@ -224,19 +233,19 @@ def test_adversarial_mutation_5_workflow_sequencing_hallucination():
     )
     validator = CitationValidator()
 
-    section = SOPSection(
+    section = DigestSection(
         section_title="3. Roles & Responsibilities",
         content="Reporting Manager approves leave after HR verification. [S001]",
         claims=[
-            SOPClaim(
+            DigestClaim(
                 claim_text="Reporting Manager approves leave after HR verification.",
                 claim_type="rule",
                 span_id="S001",
             )
         ]
     )
-    doc = SOPDocument(
-        title="Leave Approval SOP",
+    doc = DigestDocument(
+        title="Leave Approval Policy",
         purpose="Leave",
         target_audience="Employees",
         sections=[section]
@@ -277,19 +286,19 @@ def test_legitimate_claims_remain_entailed():
     validator = CitationValidator()
 
     # Valid grammatical variation and rephrasing of the exact rule
-    section = SOPSection(
+    section = DigestSection(
         section_title="5. Decision Points",
         content="Loans exceeding $20,000 require Branch Manager approval. [S001]",
         claims=[
-            SOPClaim(
+            DigestClaim(
                 claim_text="Loans exceeding $20,000 require Branch Manager approval.",
                 claim_type="rule",
                 span_id="S001",
             )
         ]
     )
-    doc = SOPDocument(
-        title="Personal Loan SOP",
+    doc = DigestDocument(
+        title="Personal Loan Policy",
         purpose="Lending",
         target_audience="Officers",
         sections=[section]

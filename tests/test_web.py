@@ -105,7 +105,7 @@ def test_web_beelzebuth_devour(monkeypatch):
     fake_result = DualOutputResult(
         graph=fake_graph,
         defect_register=fake_defects,
-        sop_markdown="# Process Digest: Test Flow\n\nVerified steps.",
+        digital_markdown="# Process Digest: Test Flow\n\nVerified steps.",
     )
 
     monkeypatch.setattr(
@@ -125,7 +125,7 @@ def test_web_beelzebuth_devour(monkeypatch):
     assert data["process_graph"]["nodes"][0]["role"] == "Operator"
     assert len(data["defects"]) == 1
     assert data["defects"][0]["id"] == "P_01"
-    assert "sop_markdown" in data
+    assert "digital_markdown" in data
 
 def test_web_beelzebuth_devour_general_document(monkeypatch):
     from injester.semantic.schemas import DualOutputResult, GroundedProcessGraph, AmbiguityRegister
@@ -185,8 +185,8 @@ def test_web_beelzebuth_devour_general_document(monkeypatch):
     assert data["filename"] == "resume.pdf"
     
     # Must contain real digital markdown of the resume
-    assert "John Doe - AI Engineer" in data["sop_markdown"]
-    assert "Developed an Agentic AI financial platform" in data["sop_markdown"]
+    assert "John Doe - AI Engineer" in data["digital_markdown"]
+    assert "Developed an Agentic AI financial platform" in data["digital_markdown"]
     assert "Developed an Agentic AI financial platform" in data["raw_content"]
     
     # General documents must synthesize structural diagram nodes

@@ -8,7 +8,7 @@ import pytest
 from injester.domain.auth import SecurityContext
 from injester.domain.models import UserRole
 from injester.pipeline import InjesterPipeline
-from injester.sop.spans import SpanRegistry, SourceSpan
+from injester.synthesis.spans import SpanRegistry, SourceSpan
 from injester.semantic.schemas import (
     ModalityType,
     EpistemicStatus,

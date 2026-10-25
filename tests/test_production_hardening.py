@@ -1,6 +1,6 @@
 import pytest
 from injester.ingestion.schema import DocumentChunk, ProvenanceMetadata
-from injester.sop.retriever import HybridRetriever
+from injester.synthesis.retriever import HybridRetriever
 from injester.vectorstore.base import VectorStore
 from injester.infrastructure.jobs import JobManager, JobType, JobStatus
 from injester.infrastructure.db import init_db, SessionLocal

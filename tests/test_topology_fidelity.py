@@ -30,7 +30,7 @@ from injester.semantic.projections import (
     render_bpmn_20_xml,
     render_swimlane_mermaid,
 )
-from injester.sop.spans import SpanRegistry, SourceSpan
+from injester.synthesis.spans import SpanRegistry, SourceSpan
 
 
 def _make_registry(span_id="S01", text="Process documentation span"):
@@ -38,7 +38,7 @@ def _make_registry(span_id="S01", text="Process documentation span"):
     registry.spans_by_id[span_id] = SourceSpan(
         span_id=span_id,
         chunk_id="c1",
-        source_doc="sop.docx",
+        source_doc="document.docx",
         text=text,
     )
     return registry
@@ -90,7 +90,7 @@ def test_topology_fidelity_same_target_different_branches():
     # 2. Compilation preserves both transitions
     compiler = DeterministicGraphCompiler()
     res = compiler.compile(
-        document_name="sop.docx",
+        document_name="document.docx",
         canonical_model=normalized,
         verdicts={},
         span_registry=registry,
@@ -187,7 +187,7 @@ def test_topology_fidelity_branch_merge():
 
     compiler = DeterministicGraphCompiler()
     res = compiler.compile(
-        document_name="sop.docx",
+        document_name="document.docx",
         canonical_model=normalized,
         verdicts={},
         span_registry=registry,
@@ -241,7 +241,7 @@ def test_topology_fidelity_loop_representation():
 
     compiler = DeterministicGraphCompiler()
     res = compiler.compile(
-        document_name="sop.docx",
+        document_name="document.docx",
         canonical_model=normalized,
         verdicts={},
         span_registry=registry,
@@ -294,7 +294,7 @@ def test_topology_fidelity_exception_and_timeout():
 
     compiler = DeterministicGraphCompiler()
     res = compiler.compile(
-        document_name="sop.docx",
+        document_name="document.docx",
         canonical_model=normalized,
         verdicts={},
         span_registry=registry,

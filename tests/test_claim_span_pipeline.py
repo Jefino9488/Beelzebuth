@@ -1,8 +1,8 @@
 import pytest
 from injester.ingestion.schema import DocumentChunk, ProvenanceMetadata
-from injester.sop.spans import SpanRegistry, SourceSpan
-from injester.sop.schemas import SOPDocument, SOPSection, ClaimCitation, SOPClaim
-from injester.sop.validator import CitationValidator
+from injester.synthesis.spans import SpanRegistry, SourceSpan
+from injester.synthesis.schemas import DigestDocument, DigestSection, ClaimCitation, DigestClaim
+from injester.synthesis.validator import CitationValidator
 
 @pytest.fixture
 def sample_chunk():
@@ -50,7 +50,7 @@ def test_validator_claim_to_span_entailment(sample_chunk):
     validator = CitationValidator()
     
     # Section with correctly entailed claims
-    section = SOPSection(
+    section = DigestSection(
         section_title="1. Underwriting Authority",
         content="Loans over $20,000 require Branch Manager authorization. [C1]",
         citations=[
@@ -61,7 +61,7 @@ def test_validator_claim_to_span_entailment(sample_chunk):
             )
         ],
         claims=[
-            SOPClaim(
+            DigestClaim(
                 claim_text="Loans exceeding $20,000 require Branch Manager approval.",
                 claim_type="rule",
                 citation=ClaimCitation(
@@ -73,8 +73,8 @@ def test_validator_claim_to_span_entailment(sample_chunk):
         ]
     )
 
-    doc = SOPDocument(
-        title="Loan Processing SOP",
+    doc = DigestDocument(
+        title="Loan Processing Policy",
         purpose="Underwriting",
         target_audience="Officers",
         sections=[section],
@@ -90,7 +90,7 @@ def test_validator_catches_unentailed_claim_amount(sample_chunk):
     validator = CitationValidator()
     
     # Claim fabricates a different threshold ($50,000 instead of $20,000 in span S003)
-    section = SOPSection(
+    section = DigestSection(
         section_title="1. Underwriting Authority",
         content="Loans over $50,000 require Branch Manager authorization. [C1]",
         citations=[
@@ -101,7 +101,7 @@ def test_validator_catches_unentailed_claim_amount(sample_chunk):
             )
         ],
         claims=[
-            SOPClaim(
+            DigestClaim(
                 claim_text="Loans exceeding $50,000 require Branch Manager approval.",
                 claim_type="threshold",
                 citation=ClaimCitation(
@@ -113,8 +113,8 @@ def test_validator_catches_unentailed_claim_amount(sample_chunk):
         ]
     )
 
-    doc = SOPDocument(
-        title="Loan Processing SOP",
+    doc = DigestDocument(
+        title="Loan Processing Policy",
         purpose="Underwriting",
         target_audience="Officers",
         sections=[section],
@@ -129,7 +129,7 @@ def test_validator_catches_invalid_span_id(sample_chunk):
     validator = CitationValidator()
     
     # Citation references a span ID that doesn't exist
-    section = SOPSection(
+    section = DigestSection(
         section_title="1. Underwriting Authority",
         content="Review within 24 hours. [C1]",
         citations=[
@@ -142,8 +142,8 @@ def test_validator_catches_invalid_span_id(sample_chunk):
         claims=[]
     )
 
-    doc = SOPDocument(
-        title="Loan Processing SOP",
+    doc = DigestDocument(
+        title="Loan Processing Policy",
         purpose="Underwriting",
         target_audience="Officers",
         sections=[section],

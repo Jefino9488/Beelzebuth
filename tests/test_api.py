@@ -57,7 +57,7 @@ def test_react_console_routes(client):
         "/dashboard",
         "/documents",
         "/process-graph",
-        "/sop",
+        "/studio",
         "/defects",
         "/audit",
         "/admin",
@@ -229,10 +229,10 @@ def test_full_api_multi_tenant_flow(client, monkeypatch):
     emp_headers = {"Authorization": f"Bearer {emp_token}"}
 
     # 7. Employee uploads a document
-    doc_content = b"# Wire Transfer SOP\n\nDual authorization is required for transfers over 100,000 INR."
+    doc_content = b"# Wire Transfer Policy\n\nDual authorization is required for transfers over 100,000 INR."
     upload_res = client.post(
         "/api/files/upload",
-        files={"file": ("wire_transfer_sop.md", io.BytesIO(doc_content), "text/markdown")},
+        files={"file": ("wire_transfer_policy.md", io.BytesIO(doc_content), "text/markdown")},
         headers=emp_headers
     )
     assert upload_res.status_code == 200, upload_res.text

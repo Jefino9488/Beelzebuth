@@ -41,7 +41,7 @@ from injester.semantic.validator import SemanticGraphValidator
 from injester.semantic.laya_adapter import LayaSystem1Verifier
 from injester.semantic.compiler import DeterministicGraphCompiler
 from injester.semantic.projections import render_flowchart_mermaid, render_bpmn_20_xml, ACTOR_UNASSIGNED
-from injester.sop.spans import SpanRegistry, SourceSpan
+from injester.synthesis.spans import SpanRegistry, SourceSpan
 
 
 # =====================================================================

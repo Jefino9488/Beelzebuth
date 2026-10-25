@@ -28,7 +28,7 @@ from injester.semantic.schemas import (
 )
 from injester.ingestion.extractor import DocumentExtractor
 from injester.ingestion.chunker import HierarchicalChunker
-from injester.sop.spans import SpanRegistry, SourceSpan
+from injester.synthesis.spans import SpanRegistry, SourceSpan
 from injester.pipeline import InjesterPipeline
 
 
@@ -85,7 +85,7 @@ def test_ingestion_file_version_and_hash_propagation_chain(tmp_path):
     Extractor(file_version_id, file_hash) -> NormalizedElement -> Chunk -> SourceSpan
     Ensures no fallback identities exist.
     """
-    test_file = tmp_path / "sop_policy.txt"
+    test_file = tmp_path / "loan_policy.txt"
     test_file.write_text(
         "Commercial loan requests up to $100,000 may be approved by a Senior Credit Analyst.\n"
         "Requests exceeding $100,000 require approval by the Credit Committee.\n"
@@ -100,7 +100,7 @@ def test_ingestion_file_version_and_hash_propagation_chain(tmp_path):
     elements = extractor.extract(
         file_path=str(test_file),
         document_id=doc_id,
-        filename="sop_policy.txt",
+        filename="loan_policy.txt",
         tenant_id=tenant_id,
         file_version_id=file_version_id,
         file_hash=file_hash,
@@ -134,10 +134,10 @@ def test_ingestion_file_version_and_hash_propagation_chain(tmp_path):
 
 
 # =====================================================================
-# 3. generate_sop() Lineage and accessible_files Execution
+# 3. generate_digest() Lineage and accessible_files Execution
 # =====================================================================
-def test_generate_sop_lineage_no_name_error(monkeypatch):
-    """Verify generate_sop runs without NameError (using accessible_files.values())."""
+def test_generate_digest_lineage_no_name_error(monkeypatch):
+    """Verify generate_digest runs without NameError (using accessible_files.values())."""
     db = SessionLocal()
     try:
         admin_user = bootstrap_superadmin(db)
@@ -149,7 +149,7 @@ def test_generate_sop_lineage_no_name_error(monkeypatch):
             organisation_id=None,
         )
         orgs = repo.list_organisations(sec_ctx_admin)
-        org = orgs[0] if orgs else repo.create_organisation(sec_ctx=sec_ctx_admin, name="Audit Org SOP")
+        org = orgs[0] if orgs else repo.create_organisation(sec_ctx=sec_ctx_admin, name="Audit Org Digest")
 
         sec_ctx = SecurityContext(
             user_id=admin_user.id,
@@ -161,7 +161,7 @@ def test_generate_sop_lineage_no_name_error(monkeypatch):
         # Upload a test file so accessible_files is non-empty
         file_rec, file_ver = repo.upload_file(
             sec_ctx=sec_ctx,
-            filename=f"sop_doc_{uuid.uuid4().hex[:6]}.txt",
+            filename=f"doc_{uuid.uuid4().hex[:6]}.txt",
             content_bytes=b"Commercial loan requests up to $100,000 may be approved by a Senior Credit Analyst.",
             mime_type="text/plain",
         )
@@ -186,33 +186,33 @@ def test_generate_sop_lineage_no_name_error(monkeypatch):
         # Mock vector store
         pipeline.vector_store._load_tenant_index = MagicMock(return_value=(None, [mock_chunk]))
 
-        # Mock SOPGenerator and build_sop
+        # Mock DigestGenerator and build_digest
         mock_doc = MagicMock()
-        mock_doc.title = f"Test SOP {uuid.uuid4().hex[:6]}"
+        mock_doc.title = f"Test Digest {uuid.uuid4().hex[:6]}"
         mock_doc.sections = []
         mock_kmap = MagicMock()
         mock_gen_instance = MagicMock()
-        mock_gen_instance.build_sop.return_value = mock_doc
+        mock_gen_instance.build_digest.return_value = mock_doc
         mock_gen_instance.last_kmap = mock_kmap
 
-        monkeypatch.setattr("injester.pipeline.SOPGenerator", MagicMock(return_value=mock_gen_instance))
+        monkeypatch.setattr("injester.pipeline.DigestGenerator", MagicMock(return_value=mock_gen_instance))
 
         # Mock validator and assembler
         mock_report = MagicMock()
         mock_report.verified_citation_index = {}
         pipeline.validator.validate_document = MagicMock(return_value=mock_report)
-        pipeline.assembler.assemble_markdown = MagicMock(return_value="# Test SOP Markdown")
+        pipeline.assembler.assemble_markdown = MagicMock(return_value="# Test Digest Markdown")
 
-        md_sop, val_rep = pipeline.generate_sop(
+        md_doc, val_rep = pipeline.generate_digest(
             topic_goal="Test Goal",
             sec_ctx=sec_ctx,
             file_ids=[file_rec.id],
         )
-        assert md_sop == "# Test SOP Markdown"
+        assert md_doc == "# Test Digest Markdown"
         assert val_rep == mock_report
 
         # Verify GenerationRun was persisted with file_version_ids
-        runs = db.query(GenerationRun).filter(GenerationRun.output_sop_id == mock_doc.title).all()
+        runs = db.query(GenerationRun).filter(GenerationRun.output_document_id == mock_doc.title).all()
         assert len(runs) > 0
         assert runs[0].input_file_version_ids == [file_ver.id]
     finally:
@@ -362,9 +362,9 @@ def test_structured_config_hash_and_span_registry_hash():
     assert ch1 == ch2
 
     # Different run_type produces different hash
-    ch_sop = pipeline._compute_config_hash(run_type="sop")
-    assert ch_sop != ch1
-    assert len(ch_sop) == 64
+    ch_digest = pipeline._compute_config_hash(run_type="digest")
+    assert ch_digest != ch1
+    assert len(ch_digest) == 64
 
     # Span registry hash determinism
     reg = SpanRegistry()

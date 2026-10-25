@@ -56,7 +56,7 @@ CONSOLE_ROUTES = [
     "/dashboard",
     "/documents",
     "/process-graph",
-    "/sop",
+    "/studio",
     "/defects",
     "/audit",
     "/admin",

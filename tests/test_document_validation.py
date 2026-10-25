@@ -1,8 +1,8 @@
 import pytest
 from injester.ingestion.schema import DocumentChunk, ProvenanceMetadata
-from injester.sop.schemas import SOPDocument, SOPSection, CitationRef
-from injester.sop.validator import CitationValidator
-from injester.sop.assembler import SOPAssembler
+from injester.synthesis.schemas import DigestDocument, DigestSection, CitationRef
+from injester.synthesis.validator import CitationValidator
+from injester.synthesis.assembler import DigestAssembler
 
 @pytest.fixture
 def sample_evidence():
@@ -30,9 +30,9 @@ def sample_evidence():
 
 def test_valid_citation_verification(sample_evidence):
     validator = CitationValidator()
-    assembler = SOPAssembler()
+    assembler = DigestAssembler()
 
-    section = SOPSection(
+    section = DigestSection(
         section_title="1. System Access Approval",
         content="Employees must obtain manager approval before system access is provisioned. [C12]",
         citations=[
@@ -47,8 +47,8 @@ def test_valid_citation_verification(sample_evidence):
         ]
     )
 
-    doc = SOPDocument(
-        title="IT Access Standard Operating Procedure",
+    doc = DigestDocument(
+        title="IT Access Policy Procedure",
         purpose="Standardize employee credential provisioning.",
         target_audience="System Administrators",
         sections=[section],
@@ -61,7 +61,7 @@ def test_valid_citation_verification(sample_evidence):
 
     # Assemble Markdown
     md_output = assembler.assemble_markdown(doc)
-    assert "# IT Access Standard Operating Procedure" in md_output
+    assert "# IT Access Policy Procedure" in md_output
     assert "[C12]" in md_output
     assert "## Citation Index" in md_output
     assert "Source: IT_Access_Policy.pdf" in md_output
@@ -71,7 +71,7 @@ def test_validator_catches_hallucinated_chunk(sample_evidence):
     validator = CitationValidator()
 
     # Section cites a hallucinated chunk ID
-    section = SOPSection(
+    section = DigestSection(
         section_title="2. Security Controls",
         content="All passwords must be 16 characters. [C1]",
         citations=[
@@ -86,8 +86,8 @@ def test_validator_catches_hallucinated_chunk(sample_evidence):
         ]
     )
 
-    doc = SOPDocument(
-        title="Security SOP",
+    doc = DigestDocument(
+        title="Security Policy",
         purpose="Testing",
         target_audience="Staff",
         sections=[section],
@@ -101,14 +101,14 @@ def test_validator_catches_orphan_citation_tag(sample_evidence):
     validator = CitationValidator()
 
     # Text contains [C99] but citations list is empty
-    section = SOPSection(
+    section = DigestSection(
         section_title="3. Orphan Tag Test",
         content="Unauthorized access is prohibited. [C99]",
         citations=[]
     )
 
-    doc = SOPDocument(
-        title="Access SOP",
+    doc = DigestDocument(
+        title="Access Policy",
         purpose="Testing",
         target_audience="Staff",
         sections=[section],

@@ -1,16 +1,16 @@
 import pytest
 from injester.ingestion.schema import DocumentChunk, ProvenanceMetadata
-from injester.sop.schemas import (
-    SOPClaim,
+from injester.synthesis.schemas import (
+    DigestClaim,
     VerifiedClaim,
     VerifiedClaimIR,
-    SOPOutlineSection,
-    SOPDocument,
+    DigestOutlineSection,
+    DigestDocument,
 )
-from injester.sop.spans import SpanRegistry
-from injester.sop.generator import SOPGenerator
-from injester.sop.validator import CitationValidator
-from injester.sop.assembler import SOPAssembler
+from injester.synthesis.spans import SpanRegistry
+from injester.synthesis.generator import DigestGenerator
+from injester.synthesis.validator import CitationValidator
+from injester.synthesis.assembler import DigestAssembler
 
 
 @pytest.fixture
@@ -80,11 +80,11 @@ def test_verified_claim_ir_hash_and_model():
     assert v_claim.evidence_spans == ["S001"]
 
     ir = VerifiedClaimIR(
-        title="Commercial Lending SOP",
+        title="Commercial Lending Policy",
         purpose="Credit decisioning",
         target_audience="Analysts",
         claims=[v_claim],
-        sections=[SOPOutlineSection(section_title="Authorities", section_goal="Approval limits")]
+        sections=[DigestOutlineSection(section_title="Authorities", section_goal="Approval limits")]
     )
     assert len(ir.claims) == 1
     assert ir.claims[0].claim_hash == h1
@@ -96,7 +96,7 @@ def test_claim_first_filtering_rejects_unentailed_candidates(sample_chunks):
     are rejected during the verification phase and never enter VerifiedClaimIR.
     """
     registry = SpanRegistry.from_chunks(sample_chunks)
-    generator = SOPGenerator()
+    generator = DigestGenerator()
     validator = CitationValidator()
 
     # S001 text: "Commercial loan requests up to $100,000 may be approved by a Senior Credit Analyst."
@@ -104,17 +104,17 @@ def test_claim_first_filtering_rejects_unentailed_candidates(sample_chunks):
     # Candidate B: Fabricated threshold $250,000
     # Candidate C: Fabricated condition "after receiving collateral appraisal"
     candidates = [
-        SOPClaim(
+        DigestClaim(
             claim_text="Commercial loan requests up to $100,000 may be approved by a Senior Credit Analyst.",
             claim_type="rule",
             span_id="S001",
         ),
-        SOPClaim(
+        DigestClaim(
             claim_text="Commercial loan requests up to $250,000 may be approved by a Senior Credit Analyst.",
             claim_type="rule",
             span_id="S001",
         ),
-        SOPClaim(
+        DigestClaim(
             claim_text="Senior Credit Analyst approves loans up to $100,000 after receiving collateral appraisal.",
             claim_type="rule",
             span_id="S001",
@@ -130,13 +130,13 @@ def test_claim_first_filtering_rejects_unentailed_candidates(sample_chunks):
     assert verified[0].entailment_confidence == 1.0
 
 
-def test_deterministic_sop_assembly_from_verified_claims(sample_chunks):
+def test_deterministic_digest_assembly_from_verified_claims(sample_chunks):
     """
     Verify that verified claims assemble deterministically into markdown sections
     with proper [S###] citation tags and structured claims.
     """
     registry = SpanRegistry.from_chunks(sample_chunks)
-    generator = SOPGenerator()
+    generator = DigestGenerator()
 
     verified_claims = [
         VerifiedClaim(
@@ -175,24 +175,24 @@ def test_deterministic_sop_assembly_from_verified_claims(sample_chunks):
     assert len(section.citations) == 2
 
 
-def test_build_sop_from_chunks_claim_first_pipeline(sample_chunks):
+def test_build_digest_from_chunks_claim_first_pipeline(sample_chunks):
     """
     End-to-end verification of Claim-First pipeline:
-    Source Chunks -> VerifiedClaimIR -> SOPDocument -> ValidationReport (Pass with 0 errors).
+    Source Chunks -> VerifiedClaimIR -> DigestDocument -> ValidationReport (Pass with 0 errors).
     """
-    generator = SOPGenerator()
+    generator = DigestGenerator()
     registry = SpanRegistry.from_chunks(sample_chunks)
 
-    sop_doc, report, markdown_sop = generator.build_sop_from_chunks(
+    digest_doc, report, markdown_digest = generator.build_digest_from_chunks(
         topic_goal="Commercial Lending Approvals",
         chunks=sample_chunks,
         span_registry=registry,
     )
 
-    assert isinstance(sop_doc, SOPDocument)
-    assert len(sop_doc.sections) > 0
+    assert isinstance(digest_doc, DigestDocument)
+    assert len(digest_doc.sections) > 0
     assert report.is_valid is True
     assert report.unsupported_claims_count == 0
     assert report.claim_entailment_score == 1.0
-    assert "# " in markdown_sop
-    assert "## Citation Index" in markdown_sop
+    assert "# " in markdown_digest
+    assert "## Citation Index" in markdown_digest

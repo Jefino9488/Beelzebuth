@@ -22,7 +22,7 @@ from injester.semantic.verifiers.policy import System1ValidationPolicy
 
 
 def test_bat_03_inaccessible_file_ids_raises_access_denied(db_session, superadmin_ctx):
-    """BAT-03: Requesting inaccessible file_ids in SOP generation raises AccessDeniedError (no silent subsetting)."""
+    """BAT-03: Requesting inaccessible file_ids in digest generation raises AccessDeniedError (no silent subsetting)."""
     repo = TenantRepository(db_session)
 
     # 1. Setup Org A and Org B
@@ -53,9 +53,9 @@ def test_bat_03_inaccessible_file_ids_raises_access_denied(db_session, superadmi
     # 4. User A requests [file_a.id, file_b.id]
     pipeline = InjesterPipeline(session=db_session)
     with pytest.raises(AccessDeniedError, match="Inaccessible resources requested"):
-        pipeline.generate_sop(
+        pipeline.generate_digest(
             sec_ctx=sec_ctx_a,
-            topic_goal="SOP Generation",
+            topic_goal="Digest Generation",
             file_ids=[file_a.id, file_b.id]
         )
 

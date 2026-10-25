@@ -6,7 +6,7 @@ from sqlalchemy.orm import sessionmaker
 from injester.domain.models import Base, Organisation, User, OrgStatus, UserRole, ProcessGraphSnapshot, GenerationRun
 from injester.domain.auth import SecurityContext, AccessDeniedError
 from injester.infrastructure.db import TenantRepository
-from injester.sop.spans import SpanRegistry
+from injester.synthesis.spans import SpanRegistry
 from injester.ingestion.schema import DocumentChunk, ProvenanceMetadata
 
 

@@ -13,7 +13,7 @@ from injester.semantic.schemas import (
     ModalityType,
     EpistemicStatus,
 )
-from injester.sop.spans import SourceSpan, SpanRegistry
+from injester.synthesis.spans import SourceSpan, SpanRegistry
 from injester.semantic.verifiers import (
     System1Verifier,
     System1ValidationPolicy,
