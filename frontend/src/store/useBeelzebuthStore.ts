@@ -16,13 +16,12 @@ export const EMPTY_DOC: DocumentDigest = {
   process_graph: { nodes: [], edges: [] },
   extracted_schema: {},
   digital_markdown: '# No Document Loaded\n\nDrop a document (.pdf, .docx, .txt, .md) above to devour into readable markdown and diagrams.',
-  sop_markdown: '# No Document Loaded\n\nDrop a document (.pdf, .docx, .txt, .md) above to devour into readable markdown and diagrams.',
   defects: [],
 };
 
 interface BeelzebuthState {
   currentDoc: DocumentDigest;
-  activeTab: 'markdown' | 'workflow' | 'llm' | 'schema' | 'sop';
+  activeTab: 'markdown' | 'workflow' | 'llm' | 'schema';
   activeSpanId: string | null;
   hoveredSpanId: string | null;
   isDevouring: boolean;
@@ -37,7 +36,7 @@ interface BeelzebuthState {
   inquisitorAbortController: AbortController | null;
 
   // Actions
-  setActiveTab: (tab: 'markdown' | 'workflow' | 'llm' | 'schema' | 'sop') => void;
+  setActiveTab: (tab: 'markdown' | 'workflow' | 'llm' | 'schema') => void;
   setActiveSpanId: (spanId: string | null) => void;
   setHoveredSpanId: (spanId: string | null) => void;
   toggleDefectDrawer: () => void;
@@ -74,7 +73,7 @@ export const useBeelzebuthStore = create<BeelzebuthState>((set, get) => ({
   toggleSettings: () => set((state) => ({ isSettingsOpen: !state.isSettingsOpen })),
   updateMarkdown: (md: string) => {
     const doc = get().currentDoc;
-    set({ currentDoc: { ...doc, digital_markdown: md, sop_markdown: md } });
+    set({ currentDoc: { ...doc, digital_markdown: md } });
   },
 
   fetchSamples: async () => {
@@ -110,8 +109,7 @@ export const useBeelzebuthStore = create<BeelzebuthState>((set, get) => ({
               spans: found.spans || [],
               process_graph: found.process_graph || { nodes: [], edges: [] },
               extracted_schema: found.extracted_schema || {},
-              digital_markdown: found.digital_markdown || found.sop_markdown || found.raw_content,
-              sop_markdown: found.digital_markdown || found.sop_markdown || found.raw_content,
+              digital_markdown: found.digital_markdown || found.raw_content,
               defects: found.defects || [],
             },
             activeSpanId: null,
@@ -169,8 +167,7 @@ export const useBeelzebuthStore = create<BeelzebuthState>((set, get) => ({
       set({
         currentDoc: {
           ...data,
-          digital_markdown: data.digital_markdown || data.sop_markdown,
-          sop_markdown: data.digital_markdown || data.sop_markdown,
+          digital_markdown: data.digital_markdown || data.raw_content || '',
         },
         activeTab: 'markdown',
         isDevouring: false,

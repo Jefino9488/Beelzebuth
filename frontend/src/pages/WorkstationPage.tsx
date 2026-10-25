@@ -51,7 +51,7 @@ export function WorkstationPage() {
                 <button
                   onClick={() => setActiveTab('markdown')}
                   className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition ${
-                    activeTab === 'markdown' || activeTab === 'sop'
+                    activeTab === 'markdown'
                       ? 'bg-violet-600 text-white shadow-md shadow-violet-950/50'
                       : 'text-zinc-400 hover:text-zinc-200 hover:bg-zinc-800/60'
                   }`}
@@ -107,7 +107,7 @@ export function WorkstationPage() {
 
             {/* Active Tab Content */}
             <div className="flex-1 min-h-0">
-              {(activeTab === 'markdown' || activeTab === 'sop') && <DigitalMarkdownTab />}
+              {activeTab === 'markdown' && <DigitalMarkdownTab />}
               {activeTab === 'workflow' && <WorkflowTab />}
               {activeTab === 'llm' && <LLMContextTab />}
               {activeTab === 'schema' && <SchemaTab />}

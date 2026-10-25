@@ -65,8 +65,7 @@ export interface DocumentDigest {
   spans: SourceSpan[];
   process_graph: ProcessGraphData;
   extracted_schema: Record<string, ExtractedField>;
-  digital_markdown?: string;
-  sop_markdown: string;
+  digital_markdown: string;
   defects: DefectItem[];
 }
 

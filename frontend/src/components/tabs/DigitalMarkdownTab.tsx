@@ -7,7 +7,7 @@ export const DigitalMarkdownTab: React.FC = () => {
   const [copied, setCopied] = useState(false);
   const [isEditing, setIsEditing] = useState(false);
 
-  const markdownContent = currentDoc.digital_markdown || currentDoc.sop_markdown || '';
+  const markdownContent = currentDoc.digital_markdown || '';
 
   const handleCopy = () => {
     navigator.clipboard.writeText(markdownContent);

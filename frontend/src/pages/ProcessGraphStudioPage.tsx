@@ -126,7 +126,7 @@ interface GraphResponse {
   flowchart_mermaid: string;
   swimlane_mermaid: string;
   state_machine_mermaid: string | null;
-  sop_markdown: string;
+  digital_markdown: string;
 }
 
 interface FileRecord {
