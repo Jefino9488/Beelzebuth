@@ -26,6 +26,54 @@ Beelzebuth is a general-purpose visual document understanding and editing system
 
 ---
 
+## The Two Core Deliverables
+
+Beelzebuth is engineered around one shared document-operation engine, accessible through two primary entry points:
+
+```
+                  ┌─────────────────────────────────────────────────────────┐
+                  │                 TWO PRIMARY ENTRY POINTS                │
+                  └────────────┬───────────────────────────────┬────────────┘
+                               │                               │
+                               ▼                               ▼
+               ┌───────────────────────────────┐ ┌───────────────────────────────┐
+               │  1. STANDALONE OPEN-SOURCE    │ │   2. BEELZEBUTH MCP SERVER    │
+               │          APPLICATION          │ │                               │
+               │ • React Web Workbench UI     │ │ • Stdio JSON-RPC Server       │
+               │ • Python CLI (`injester`)     │ │ • Claude Desktop & Cursor     │
+               │ • REST API & Visual Graphs    │ │ • AI Agents & LLM Tool Calls  │
+               │ • BYOAI (OpenRouter / Gemini) │ │ • Autonomous Document Tools   │
+               └───────────────┬───────────────┘ └───────────────┬───────────────┘
+                               │                               │
+                               └───────────────┬───────────────┘
+                                               │
+                                               ▼
+               ┌───────────────────────────────────────────────────────────────┐
+               │               SHARED DOCUMENT-OPERATION ENGINE                │
+               │  Sessions · Ingestion · ChangeSets · Approval Gate · Verify   │
+               └───────────────────────────────┬───────────────────────────────┘
+                                               │
+                                               ▼
+               ┌───────────────────────────────────────────────────────────────┐
+               │      CANONICAL DOCUMENT MODEL (CDM) + CHANGE ENGINE           │
+               │  Model A (Document IR) ◄──► Model B (Semantic Process Graph)  │
+               │  Typed Change Commands ➔ HMAC-SHA256 Gate ➔ Format Patchers   │
+               └───────────────────────────────────────────────────────────────┘
+```
+
+1. **Standalone Open-Source Beelzebuth**:
+   - A self-hosted document intelligence and transformation application.
+   - Users bring their own AI provider and model (BYOAI: OpenRouter, Gemini, Ollama, OpenAI-compatible) or run completely offline with local verifiers.
+   - Interactive React Web Workbench (`injester web`), terminal CLI (`injester`), and REST API.
+   - Visual procedure workflows, 3-way traceability, defect registers, and 4-pillar roundtrip verification.
+
+2. **Beelzebuth Model Context Protocol (MCP) Server**:
+   - Exposes document understanding, search, editing, and verification capabilities as standardized MCP tools (`injester mcp` or `python -m injester.mcp`).
+   - External AI clients (Claude Desktop, Cursor, Goose, autonomous agents) invoke document tools directly without running a redundant second LLM.
+   - **Enforced Security Boundary**: Agents can inspect documents, propose typed changes, and preview diffs. In default manual mode, execution is gated by a single-use human approval token tracked transactionally in SQLite (`SHA-256` token hash, atomic compare-and-set). Models cannot self-approve their own changes.
+
+---
+
 ## The Core Problem
 
 Consider a **200-page PC Installation & Maintenance Manual**:
@@ -298,26 +346,132 @@ The browser opens automatically at `http://127.0.0.1:8000`.
 
 ---
 
-## 11. Phased Roadmap & Documentation
+## 11. Model Context Protocol (MCP) Integration
+
+Beelzebuth provides a local stdio MCP server (`injester mcp` or `python -m injester.mcp`), exposing document tools to external AI clients such as **Claude Desktop**, **Cursor**, **Goose**, or custom agents.
+
+### Claude Desktop Configuration
+Add Beelzebuth to your `claude_desktop_config.json`:
+```json
+{
+  "mcpServers": {
+    "beelzebuth": {
+      "command": "/path/to/Beelzebuth/venv/bin/python",
+      "args": ["-m", "injester.mcp"],
+      "cwd": "/path/to/Beelzebuth",
+      "env": {
+        "WORKSPACE_DIR": "/path/to/Beelzebuth",
+        "APPROVAL_MODE": "manual"
+      }
+    }
+  }
+}
+```
+
+### Cursor Configuration
+Add to `.cursor/mcp.json` or project settings:
+```json
+{
+  "mcpServers": {
+    "beelzebuth": {
+      "command": "./venv/bin/python",
+      "args": ["-m", "injester.mcp"],
+      "env": {
+        "APPROVAL_MODE": "manual"
+      }
+    }
+  }
+}
+```
+
+### Available MCP Tools
+| Tool Name | Purpose | Security Gate |
+| :--- | :--- | :--- |
+| `list_documents` | List indexed documents and metadata in the workspace | Read-Only |
+| `inspect_document` | Inspect document structural properties, type, and block counts | Read-Only |
+| `get_document_structure` | Hierarchical outline of headings, blocks, and procedure steps | Read-Only |
+| `find_blocks` | Query text or filter blocks by type (`HEADING`, `PARAGRAPH`, `TABLE`) | Read-Only |
+| `get_block_content` | Retrieve text, formatting, and source provenance for a block | Read-Only |
+| `propose_text_edit` | Propose updating text of a paragraph (generates a `PROPOSED` ChangeSet) | ChangeSet Created |
+| `propose_section_reorder`| Propose moving an entire section before another section | ChangeSet Created |
+| `propose_block_move` | Propose reordering a step within its procedure scope | ChangeSet Created |
+| `get_changeset` | Inspect status, proposed commands, and dependency validation | Read-Only |
+| `preview_changeset` | Generate human-readable diff summary and structural impact | Read-Only (Token Stripped) |
+| `approve_changeset` | Authorize a ChangeSet with cryptographic HMAC-SHA256 signature | Requires Human Approval Token |
+| `apply_changeset` | Surgically patch OOXML package and re-verify document integrity | Must be `APPROVED` |
+| `verify_document` | Run 4-pillar roundtrip verification between source and output | Read-Only Verification |
+| `search_evidence` | Dense vector retrieval across indexed evidence chunks | Read-Only |
+| `generate_diagram` | Depict visual workflow projections (Mermaid, BPMN 2.0 XML) | Read-Only |
+
+---
+
+## 12. Bring Your Own AI (BYOAI) Configuration
+
+Beelzebuth is provider-agnostic. Configure your chosen AI model in `.env`:
+
+### OpenRouter (Free or Paid Models)
+```bash
+OPENAI_BASE_URL=https://openrouter.ai/api/v1
+OPENAI_API_KEY=sk-or-v1-your-key-here
+MODEL_NAME=nvidia/nemotron-3.5-lightning:free
+OPENROUTER_FREE_MODEL=nvidia/nemotron-3.5-lightning:free
+```
+
+### Google Gemini
+```bash
+GEMINI_API_KEY=your-gemini-api-key
+MODEL_NAME=gemini-2.5-flash
+```
+
+### Local Ollama / vLLM / OpenAI-Compatible
+```bash
+OPENAI_BASE_URL=http://localhost:11434/v1
+OPENAI_API_KEY=ollama
+MODEL_NAME=qwen2.5:32b
+```
+
+---
+
+## 13. Security & 4-Pillar Verification Model
+
+### Atomic Single-Use Approval Tokens
+- In manual mode, proposed changes generate diffs but cannot be applied without human consent.
+- Approval tokens (`appr_<token>`) are generated via the Web Workbench or CLI.
+- The server stores only a SHA-256 hash of the bearer token in a transactional SQLite store (`approval_tokens`).
+- Consumption is enforced via an atomic conditional SQL query (`UPDATE ... WHERE token_hash = ? AND consumed = 0`). Concurrent replay attempts fail closed with HTTP 403.
+
+### 4-Pillar Verification Guarantees
+Every applied ChangeSet is verified against four distinct pillars:
+1. **Operation Correctness**: The requested modification was executed specifically on the target block ID without affecting duplicate phrases in other blocks.
+2. **Structural Integrity**: Heading hierarchy, section parentage, block sequences, and procedure scopes remain intact.
+3. **Package & Styles Preservation**: Essential OOXML parts (`[Content_Types].xml`, `_rels/.rels`, `word/document.xml`) and invariant parts (`word/styles.xml`, `word/numbering.xml`, `word/settings.xml`, `word/fontTable.xml`) are strictly retained. Dropped parts fail verification.
+4. **Content Preservation**: 100% byte-level paragraph XML signatures (`xml_signature_hash`), text equality, formatting attributes, and 2D table matrices are preserved for untouched blocks. Any unverified scope (e.g. drawn shapes) is explicitly reported.
+
+---
+
+## 14. Automated Test Suites
+
+```bash
+# Run full test suite (244 tests)
+./venv/bin/pytest -v
+
+# Run MCP and document tool security suite
+./venv/bin/pytest tests/test_document_tools_and_mcp.py -v
+
+# Run DOCX round-trip acceptance tests (14 gates)
+./venv/bin/pytest tests/test_docx_roundtrip_acceptance.py -v
+```
+
+Current test baseline: **244 passing** across unit, security, concurrent token races, cross-process persistence, protocol-level MCP, and real enterprise document round-trip acceptance tests.
+
+---
+
+## 15. Phased Roadmap & Documentation
 
 📅 **[Engineering Roadmap & Gantt Schedule](GANTT.md)**  
 📖 **[Full Architecture Specification](docs/ARCHITECTURE.md)**  
 📐 **[Canonical Document Model Specification](docs/CANONICAL_DOCUMENT_MODEL.md)**  
 💻 **[Developer & Context Guide](docs/DEVELOPER_GUIDE.md)**  
-
----
-
-## 12. Automated Test Suites
-
-```bash
-# Run full test suite (171 tests)
-./venv/bin/pytest
-
-# Run DOCX round-trip acceptance tests only (14 gates)
-./venv/bin/pytest tests/test_docx_roundtrip_acceptance.py -v
-```
-
-Current test baseline: **171 passing** across unit, integration, and real enterprise document round-trip acceptance tests.
 
 ---
 

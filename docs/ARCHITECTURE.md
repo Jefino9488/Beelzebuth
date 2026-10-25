@@ -251,3 +251,33 @@ Visual projections share canonical document and semantic IDs across domain-appro
 5. **No Lossless PDF Guarantees**: A flattened PDF has no editable semantic source package. Beelzebuth provides a defined, high-fidelity **reconstruction mode** rather than claiming impossible lossless PDF patching.
 6. **Style Preservation in Same-Format Editing**: Editing a DOCX modifies only targeted OpenXML elements; untouched sections remain identical.
 7. **Four-Tier Evidence Scoring**: All extracted and edited claims are scored as `STRONG`, `MODERATE`, `WEAK`, or `NONE` (new addition).
+
+---
+
+## 8. Dual Entry Points & Shared Application Engine
+
+Beelzebuth is purposefully divided into **two entry points** backed by a single shared document-operation engine:
+
+### 1. Standalone Application (Self-Hosted Visual Workbench)
+- **React UI**: Interactive workflow canvas, procedure step reordering, visual diff inspection, and verification breakdown.
+- **REST API (`/api/v1/beelzebuth/*`)**: Endpoints for document devour, session management, ChangeSet creation, diff preview, token issuance, approval, and recompilation.
+- **Terminal CLI (`injester`)**: Native developer commands for extraction, Markdown generation, and workspace diagnostics.
+- **BYOAI Flexibility**: Operators configure their choice of AI provider (OpenRouter, Google Gemini, Ollama, OpenAI) or run fully local/offline with open-weight verifiers (OpenJev, Laya).
+
+### 2. Model Context Protocol (MCP) Server
+- **Protocol**: Standardized JSON-RPC over stdio (`python -m injester.mcp`).
+- **Target Audience**: External AI clients (Claude Desktop, Cursor, Goose, autonomous coding agents).
+- **Zero Redundant AI**: External AI clients supply their own model and reasoning; Beelzebuth provides zero-hallucination document tools rather than nesting an unnecessary secondary LLM.
+- **Auditable Lifecycle**:
+  - `inspect_document` / `get_document_structure` / `find_blocks`
+  - `propose_text_edit` / `propose_section_reorder` / `propose_block_move`
+  - `preview_changeset` (human-readable diff summary; approval credentials stripped)
+  - `approve_changeset` (cryptographic authorization; requires human approval token in manual mode)
+  - `apply_changeset` (surgical OOXML mutation)
+  - `verify_document` (4-pillar roundtrip verification report)
+
+### 3. Transactional Token Security & Verification Pillars
+- **Atomic Compare-and-Set**: Tokens are hashed with SHA-256 and tracked in SQLite WAL mode. Single-use consumption is enforced by `UPDATE approval_tokens SET consumed = 1 WHERE token_hash = ? AND consumed = 0`. Replay attempts fail closed with HTTP 403.
+- **Cross-Process Persistence**: ChangeSets created in an MCP stdio subprocess are persisted to SQLite/JSON and immediately retrievable by the Web Workbench or CLI for review and approval.
+- **4-Pillar Verification**: Every compilation checks (1) Operation Correctness on the specific target block, (2) Structural Integrity, (3) Package Parts & Styles Preservation (invariant OOXML parts), and (4) Content Preservation (byte-level XML signatures on untouched paragraphs).
+
