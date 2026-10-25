@@ -28,8 +28,8 @@ flowchart TD
     subgraph CoreEngine ["Beelzebuth Processing Pipeline"]
         subgraph Stage1 ["Stage 1: Partitioning & Normalization"]
             DocExt["DocumentExtractor\n(unstructured partition)"]
-            TableParser["HTMLTableParser\n(HTML -> GFM Tables)"]
-            DiagramDetector["DiagramDetector\n(Flows -> Mermaid)"]
+            TableParser["BeautifulSoup Table Parser\n(HTML -> GFM Tables)"]
+            DiagramDetector["Visual Callout Formatter\n(Figures & Charts)"]
         end
 
         subgraph Stage2 ["Stage 2: Evidence Grounding"]
@@ -96,10 +96,12 @@ graph LR
 
 ## 3. Core Processing Pipeline Deep Dive
 
-### Tier 1: Ingestion & Partitioning
+### Tier 1: Ingestion & Dual-Backend Partitioning
 - **Location**: `injester/ingestion/extractor.py`
 - **Supported Formats**: PDF, DOCX, XLSX, CSV, TXT, Markdown, PPTX, HTML, Images.
-- **Engine**: Powered by `unstructured.partition.auto.partition`.
+- **Pluggable Extraction Engines**:
+  1. **Unstructured (Default)**: Fast, deterministic document partitioning (`strategy="auto"` or `strategy="hi_res"` with `skip_infer_table_types=[]` to preserve HTML table layouts).
+  2. **Docling (Deep Learning)**: Powered by IBM's `docling` with `TableFormer` deep learning table structure recognition and native Markdown generation for complex multi-page tables and merged cells.
 - **Metadata Capture**: Normalizes document structures into `NormalizedElement` instances, recording:
   - Element type (`Title`, `Header`, `NarrativeText`, `ListItem`, `Table`, `FigureCaption`).
   - Section path hierarchy (`['Section 1', 'Sub-clause 1.2']`).
@@ -117,22 +119,16 @@ graph LR
 - **Location**: `injester/application/digitizer.py`
 - Recreates the document structure deterministically in **< 1.5 seconds**:
   1. **HTML Table to GFM Parsing**:
-     - `HTMLTableParser` parses raw `<table>...</table>` trees from element metadata.
-     - Strips nested tags, cleans non-breaking whitespace, measures column widths, and produces aligned GitHub-Flavored Markdown:
+     - Utilizes `BeautifulSoup` to parse `metadata.text_as_html` trees produced by Unstructured layout analysis (`skip_infer_table_types=[]`).
+     - Extracts headers and rows, measures column widths, escapes pipe characters, and outputs aligned GitHub-Flavored Markdown tables:
        ```markdown
        | Column A | Column B | Column C |
        | :--- | :--- | :--- |
        | Value 1 | Value 2 | Value 3 |
        ```
-  2. **Diagram & Flow Sequence Detection**:
-     - Scans for transition arrows (`->`, `-->`, `=>`) or numbered progression patterns (`Phase 1 -> Phase 2`).
-     - Emits inline Mermaid diagram code blocks directly within the Markdown:
-       ````markdown
-       ```mermaid
-       graph TD
-         A["Step 1"] --> B["Step 2"]
-       ```
-       ````
+  2. **Visual Asset & Figure Preservation**:
+     - Accurately captures figures and pictures from layout elements as clean visual callouts (`> 📊 **Figure**: *<caption/name>*`) without brittle regex flow hallucination.
+     - Flowchart and diagram synthesis is reserved for the on-demand diagram studio and BPMN/Mermaid projections.
   3. **Inline Citation Tagging**:
      - Appends `[S###]` badges to each sentence corresponding to its registered evidence span.
   4. **Auditable Citation Index**:

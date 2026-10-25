@@ -8,9 +8,9 @@ Beelzebuth is an open-source, local-first document digitization and grounding en
 
 ## Key Capabilities
 
-- **Universal Document Digitization**: Converts any document format into high-fidelity, human-readable `.md` while preserving all original context, headings, paragraphs, and list hierarchies.
-- **Native Table Transcription**: Detects tabular structures from PDFs, DOCX, and HTML layouts and converts them into standardized GitHub-Flavored Markdown tables.
-- **Diagram & Flow Preservation**: Recognizes process flows, sequence progressions, and state transitions, transcribing them into native inline Mermaid blocks (````mermaid graph TD ... ````).
+- **Universal Document Digitization**: Converts any document format into high-fidelity, human-readable `.md` while preserving all original context, headings, paragraphs, and list hierarchies. Supports both fast Unstructured partitioning and deep-learning **Docling TableFormer** extraction.
+- **Native Table Transcription**: Detects tabular structures from PDFs, DOCX, and HTML layouts and converts them into standardized GitHub-Flavored Markdown tables using BeautifulSoup and Docling TableFormer.
+- **Diagram & Flow Preservation**: Recognizes process flows, sequence progressions, and state transitions, transcribing them into native inline Mermaid blocks (````mermaid graph TD ... ````) on explicit diagram depiction.
 - **Granular Evidence Grounding**: Every sentence is tagged with an immutable citation badge `[S001]` mapped to an exact page, section path, and source excerpt in the **Citation & Source Provenance Index**.
 - **Three Unified Interfaces**: Operate via terminal CLI, local interactive Web Workbench, or Model Context Protocol (MCP) server for AI assistants—all sharing a single core engine and local workspace.
 - **Optional Diagram Depiction**: Synthesizes interactive document structure graphs, Mermaid flowcharts, swimlanes, and BPMN 2.0 XML.
@@ -48,7 +48,9 @@ Beelzebuth is an open-source, local-first document digitization and grounding en
 | `injester` | Display overview and available commands. |
 | `injester init` | Initialize the local workspace directory (`injester.db` and vector store). |
 | `injester md generate -f <file> -o <out.md>` | Devour a file directly into high-fidelity Markdown with tables and citations. |
+| `injester md generate -f <file> --backend docling` | Devour using Docling TableFormer for complex deep-learning table extraction. |
 | `injester ingest <file>` | Ingest and index a document into the local workspace. |
+| `injester ingest <file> --backend docling` | Ingest using Docling layout analysis and TableFormer. |
 | `injester ingest <file> -o <out.md>` | Ingest, index, and save the digitized Markdown file. |
 | `injester documents list` | List locally stored documents and indexed chunk counts. |
 | `injester search "<query>"` | Semantic vector search across indexed evidence chunks. |
